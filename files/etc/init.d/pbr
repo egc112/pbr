@@ -462,28 +462,28 @@ mwan4_get_iface_list() {
 	local iface_list=""
 	mwan4_is_installed || return 1
 
-	# Use uci to get all interface sections where enabled=1
-	for iface in $(uci -q show mwan4 | grep "=interface$" | cut -d. -f2 | cut -d= -f1); do
-		if [ "$(uci -q get mwan4."$iface".enabled)" = "1" ]; then
-			iface_list="${iface_list}${iface} "
-		fi
-	done
+	_mwan4_collect_iface() {
+		local en
+		config_get_bool en "$1" 'enabled' '0'
+		[ "$en" -gt '0' ] && iface_list="${iface_list}${1} "
+	}
+	config_load 'mwan4'
+	config_foreach _mwan4_collect_iface 'interface'
 
 	echo "${iface_list% }"
 }
 
-mwan4_get_policy_list() {
-	# Get list of mwan4 policies from UCI config
-	# Output: space-separated list of policy names
-	local policy_list=""
+mwan4_get_strategy_list() {
+	# Get list of mwan4 strategies from UCI config
+	# Output: space-separated list of strategy names
+	local strategy_list=""
 	mwan4_is_installed || return 1
 
-	# Use uci to get all policy sections
-	for policy in $(uci -q show mwan4 | grep "=policy$" | cut -d. -f2 | cut -d= -f1); do
-		policy_list="${policy_list}${policy} "
-	done
+	_mwan4_collect_strategy() { strategy_list="${strategy_list}${1} "; }
+	config_load 'mwan4'
+	config_foreach _mwan4_collect_strategy 'strategy'
 
-	echo "${policy_list% }"
+	echo "${strategy_list% }"
 }
 
 mwan4_get_iface_mark_chain() {
@@ -513,8 +513,8 @@ mwan4_get_iface_nft_sets() {
 	mwan4_is_installed || return 1
 
 	# Get the family (ipv4/ipv6) for the interface
-	family=$(uci -q get mwan4."$iface".family)
-	[ -z "$family" ] && family="ipv4"
+	config_load 'mwan4'
+	config_get family "$iface" 'family' 'ipv4'
 
 	# The sets used by mwan4 per interface family
 	for settype in connected custom dynamic; do
@@ -526,19 +526,19 @@ mwan4_get_iface_nft_sets() {
 	echo "${sets% }"
 }
 
-mwan4_get_policy_chain() {
-	# Get the nftables policy chain name for a specific mwan4 policy
-	# $1 = policy name
+mwan4_get_strategy_chain() {
+	# Get the nftables strategy chain name for a specific mwan4 strategy
+	# $1 = strategy name
 	# $2 = family (ipv4 or ipv6, defaults to ipv4)
-	# Output: chain name (e.g., "mwan4_policy_balanced_ipv4")
-	local policy="$1"
+	# Output: chain name (e.g., "mwan4_strategy_balanced_ipv4")
+	local strategy="$1"
 	local family="${2:-ipv4}"
-	[ -z "$policy" ] && return 1
+	[ -z "$strategy" ] && return 1
 	mwan4_is_running || return 1
 
 	# Check if the chain exists in nftables
-	if "$nft" list chain inet fw4 "mwan4_policy_${policy}_${family}" >/dev/null 2>&1; then
-		echo "mwan4_policy_${policy}_${family}"
+	if "$nft" list chain inet fw4 "mwan4_strategy_${strategy}_${family}" >/dev/null 2>&1; then
+		echo "mwan4_strategy_${strategy}_${family}"
 		return 0
 	fi
 	return 1
@@ -550,8 +550,8 @@ mwan4_get_mmx_mask() {
 	mwan4_is_installed || return 1
 
 	local mask
-	mask=$(uci -q get mwan4.globals.mmx_mask)
-	[ -z "$mask" ] && mask="0x3F00"  # Default mask
+	config_load 'mwan4'
+	config_get mask 'globals' 'mmx_mask' '0x3F00'
 	echo "$mask"
 }
 
@@ -917,6 +917,9 @@ is_wan_up() {
 	fi
 }
 
+# nft() overrides the nft binary: all calls append to the atomic nft file.
+# This captures both internal rules and user include script output.
+# Use nft_call() for direct nft binary access.
 nft() { [ -n "$*" ] && nft_file 'add' 'main' "$@"; }
 nft4() { nft "$@"; }
 nft6() { [ -n "$ipv6_enabled" ] || return 0; nft "$@"; }
@@ -1162,59 +1165,44 @@ cleanup() {
 				sync
 			;;
 			main_table)
-				# Get all rules to delete in one pass (format: "priority suppress_prefixlength_value table_name")
-				ip -4 rule show | awk '
-					/lookup[[:space:]]+main[[:space:]]+suppress_prefixlength[[:space:]]+[0-9]+/ { 
-						sub(":", "", $1)
-						match($0, /suppress_prefixlength[[:space:]]+([0-9]+)/, arr)
-						print $1 " " arr[1] " main"
-					}
-					/lookup '"$ipTablePrefix"'_/ { 
-						sub(":", "", $1)
-						match($0, /lookup[[:space:]]+([^[:space:]]+)/, arr)
-						print $1 " 0 " arr[1]
-					}
-				' | while read -r prio len table; do
-					if [ "$table" != "main" ] && is_netifd_table "$table"; then
-						continue  # Skip netifd-managed tables
-					fi
-					if [ "$len" = "0" ]; then
-						# pbr table rule - try priority deletion first
-						ip -4 rule del priority "$prio" 2>/dev/null
-					else
-						# suppress_prefixlength rule - try priority first, then full spec
-						if ! ip -4 rule del priority "$prio" 2>/dev/null; then
-							ip -4 rule del lookup main suppress_prefixlength "$len" priority "$prio" 2>/dev/null || \
-							ip -4 rule del table main suppress_prefixlength "$len" priority "$prio" 2>/dev/null
-						fi
-					fi
+				# Delete rules by priority range instead of parsing table names.
+				# pbr rules occupy: uplink_ip_rules_priority (down) for interfaces,
+				# uplink_ip_rules_priority+1 for suppress_prefixlength.
+				local prio_min prio_max prio table line
+				# max interfaces = fw_mask / uplink_mark (e.g. 0x00ff0000/0x00010000 = 255)
+				local max_ifaces="$((fw_mask / uplink_mark))"
+				prio_max="$((uplink_ip_rules_priority + 1))"
+				prio_min="$((uplink_ip_rules_priority - max_ifaces))"
+				ip -4 rule show | while IFS= read -r line; do
+					prio="${line%%:*}"
+					[ "$prio" -ge "$prio_min" ] 2>/dev/null && [ "$prio" -le "$prio_max" ] 2>/dev/null || continue
+					# Skip netifd-managed fwmark rules (but not WG sport rules)
+					case "$line" in
+						*fwmark*"lookup ${ipTablePrefix}_"*)
+							table="${line##*lookup }"
+							table="${table%% *}"
+							is_netifd_table "$table" && continue
+							;;
+					esac
+					ip -4 rule del priority "$prio" 2>/dev/null
 				done
+				# Legacy: remove suppress_prefixlength rules created without explicit priority
+				ip -4 rule del lookup 'main' suppress_prefixlength "$prefixlength" 2>/dev/null
 				# Always attempt IPv6 cleanup regardless of current ipv6_enabled setting
 				# since rules might exist from when IPv6 was previously enabled
-				ip -6 rule show 2>/dev/null | awk '
-					/lookup[[:space:]]+main[[:space:]]+suppress_prefixlength[[:space:]]+[0-9]+/ { 
-						sub(":", "", $1)
-						match($0, /suppress_prefixlength[[:space:]]+([0-9]+)/, arr)
-						print $1 " " arr[1] " main"
-					}
-					/lookup '"$ipTablePrefix"'_/ { 
-						sub(":", "", $1)
-						match($0, /lookup[[:space:]]+([^[:space:]]+)/, arr)
-						print $1 " 0 " arr[1]
-					}
-				' | while read -r prio len table; do
-					if [ "$table" != "main" ] && is_netifd_table "$table"; then
-						continue  # Skip netifd-managed tables
-					fi
-					if [ "$len" = "0" ]; then
-						ip -6 rule del priority "$prio" 2>/dev/null
-					else
-						if ! ip -6 rule del priority "$prio" 2>/dev/null; then
-							ip -6 rule del lookup main suppress_prefixlength "$len" priority "$prio" 2>/dev/null || \
-							ip -6 rule del table main suppress_prefixlength "$len" priority "$prio" 2>/dev/null
-						fi
-					fi
+				ip -6 rule show 2>/dev/null | while IFS= read -r line; do
+					prio="${line%%:*}"
+					[ "$prio" -ge "$prio_min" ] 2>/dev/null && [ "$prio" -le "$prio_max" ] 2>/dev/null || continue
+					case "$line" in
+						*fwmark*"lookup ${ipTablePrefix}_"*)
+							table="${line##*lookup }"
+							table="${table%% *}"
+							is_netifd_table "$table" && continue
+							;;
+					esac
+					ip -6 rule del priority "$prio" 2>/dev/null
 				done
+				ip -6 rule del lookup 'main' suppress_prefixlength "$prefixlength" 2>/dev/null
 			;;
 			main_chains)
 				for i in $chainsList dstnat; do
@@ -2229,17 +2217,17 @@ interface_routing() {
 				fi
 
 				if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${mark}"; then
-					try nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}" || ipv4_error=1
-					try nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}" || ipv4_error=1
-					try nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return" || ipv4_error=1
+					nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return"
 				fi
 
 				dscp="$(uci_get "$packageName" 'config' "${iface}_dscp" '0')"
 				if [ "$dscp" -ge '1' ] && [ "$dscp" -le '63' ]; then
-					try nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv4Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${mark}" || s=1
+					nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv4Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
 				fi
 				if [ "$iface" = "$icmp_interface" ]; then
-					try nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv4Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${mark}" || s=1
+					nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv4Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
 				fi
 			fi
 
@@ -2267,17 +2255,17 @@ interface_routing() {
 				fi
 
 				if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${mark}"; then
-					try nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}" || ipv6_error=1
-					try nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}" || ipv6_error=1
-					try nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return" || ipv6_error=1
+					nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return"
 				fi
 
 				dscp="$(uci_get "$packageName" 'config' "${iface}_dscp" '0')"
 				if [ "$dscp" -ge '1' ] && [ "$dscp" -le '63' ]; then
-					try nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv6Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${mark}" || s=1
+					nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv6Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
 				fi
 				if [ "$iface" = "$icmp_interface" ]; then
-					try nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv6Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${mark}" || s=1
+					nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv6Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
 				fi
 			fi
 
@@ -2296,10 +2284,8 @@ interface_routing() {
 		;;
 		delete|destroy)
 			is_netifd_interface "$iface" && return 0
-			ip -4 rule del table 'main' suppress_prefixlength "$prefixlength" prio "$((priority - 1))" >/dev/null 2>&1
 			ip -4 rule del table 'main' prio "$((priority - 1000))" >/dev/null 2>&1
 			ip -4 rule del table "$tid" prio "$priority" >/dev/null 2>&1
-			ip -6 rule del table 'main' suppress_prefixlength "$prefixlength" prio "$((priority - 1))" >/dev/null 2>&1
 			ip -6 rule del table 'main' prio "$((priority - 1000))" >/dev/null 2>&1
 			ip -6 rule del table "$tid" prio "$priority" >/dev/null 2>&1
 			ip -4 rule flush table "$tid" >/dev/null 2>&1
@@ -2420,11 +2406,13 @@ process_interface() {
 				}
 				config_foreach _wg_server 'interface'
 
+				ip -4 rule del priority "$((uplink_ip_rules_priority + 1))" >/dev/null 2>&1
 				ip -4 rule del lookup 'main' suppress_prefixlength "$prefixlength" >/dev/null 2>&1
-				try ip -4 rule add lookup 'main' suppress_prefixlength "$prefixlength" || ipv4_error=1
+				try ip -4 rule add lookup 'main' suppress_prefixlength "$prefixlength" pref "$((uplink_ip_rules_priority + 1))" || ipv4_error=1
 				if [ -n "$ipv6_enabled" ]; then
+					ip -6 rule del priority "$((uplink_ip_rules_priority + 1))" >/dev/null 2>&1
 					ip -6 rule del lookup 'main' suppress_prefixlength "$prefixlength" >/dev/null 2>&1
-					try ip -6 rule add lookup 'main' suppress_prefixlength "$prefixlength" || ipv6_error=1
+					try ip -6 rule add lookup 'main' suppress_prefixlength "$prefixlength" pref "$((uplink_ip_rules_priority + 1))" || ipv6_error=1
 				fi
 				return 0
 			;;
@@ -2856,7 +2844,6 @@ start_service() {
 				output_1_newline
 			fi
 			nft_file 'install' 'main'
-			resolver 'compare_hash' && resolver 'restart'
 		;;
 	esac
 
@@ -2887,15 +2874,16 @@ start_service() {
 	procd_close_instance
 }
 
-service_running() { procd_set_config_changed firewall; }
+service_running() { is_service_running; }
 service_started() {
 	[ -n "$pbrBootFlag" ] && return 0
 	local error warning c
 	if nft_file 'exists' 'main'; then
-		procd_set_config_changed firewall
-		[ -n "$gatewaySummary" ] && output "$serviceName (fw4 nft file mode) started with gateways:\n${gatewaySummary}"
+		fw4 -q reload >/dev/null 2>&1
+		resolver 'compare_hash' && resolver 'restart'
+		[ -n "$gatewaySummary" ] && output "$serviceName started with gateways:\n${gatewaySummary}"
 	else
-		output "$serviceName FAILED TO START in fw4 nft file mode!!!\n"
+		output "$serviceName FAILED TO START!!!\n"
 		output "Check the output of nft -c -f $nftTempFile\n"
 	fi
 	warning="$(json get warning)"
@@ -2971,7 +2959,7 @@ stop_service() {
 	fi
 	output 'Resetting routing '
 	if nft_file 'delete' 'main' && \
-		cleanup 'main_table' 'rt_tables' 'main_chains' && \
+		cleanup 'main_table' 'rt_tables' && \
 		ip route flush cache; then
 		output_okn
 	else
@@ -3192,7 +3180,7 @@ load_validate_config() {
 		'resolver_instance:list(or(integer, string)):*' \
 		'verbosity:range(0,2):2' \
 		'uplink_mark:regex("[A-Fa-f0-9]{8}"):00010000' \
-		'uplink_ip_rules_priority:uinteger:30000' \
+		'uplink_ip_rules_priority:range(1001,32765):30000' \
 		'fw_mask:regex("[A-Fa-f0-9]{8}"):00ff0000' \
 		'icmp_interface:or("", tor, uci("network", "@interface"))' \
 		'ignored_interface:list(or(tor, uci("network", "@interface")))' \
