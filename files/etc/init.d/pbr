@@ -393,8 +393,8 @@ ipv4_leases_to_nftset() { [ -s '/tmp/dhcp.leases' ] && awk -v arg="$1" 'BEGIN{fs
 ipv6_leases_to_nftset() { [ -s '/tmp/hosts/odhcpd' ] && awk -v arg="$1" 'BEGIN{fs=""};$0~arg{printf fs$1;fs=","}' /tmp/hosts/odhcpd;}
 # shellcheck disable=SC3037
 ports_to_nftset() { echo -en "$1"; }
-get_mark_nft_chains() { "$nft" list table inet "$nftTable" 2>/dev/null | grep chain | grep "${nftPrefix}_mark_" | awk '{ print $2 }'; }
-get_nft_sets() { "$nft" list table inet "$nftTable" 2>/dev/null | grep 'set' | grep "${nftPrefix}_" | awk '{ print $2 }'; }
+get_mark_nft_chains() { "$nft" list table inet "$nftTable" 2>/dev/null | grep chain | grep "${nftPrefix:+${nftPrefix}_}mark_" | awk '{ print $2 }'; }
+get_nft_sets() { "$nft" list table inet "$nftTable" 2>/dev/null | grep 'set' | grep "${nftPrefix:+${nftPrefix}_}" | awk '{ print $2 }'; }
 __ubus_get() { ubus call service list "{ 'name': '$packageName' }" | jsonfilter -e "$1"; }
 ubus_get_status() { __ubus_get "@.${packageName}.instances.main.data.status.${1}"; }
 ubus_get_interface() { __ubus_get "@.${packageName}.instances.main.data.gateways[@.name='${1}']${2:+.$2}"; }
@@ -437,7 +437,7 @@ sanitize_list() { sed 's/#.*//;s/^[ \t]*//;s/[ \t]*$//;s/[ \t][ \t]*/ /g;/^[ \t]
 # luci app specific
 is_enabled() { uci_get "$1" 'config' 'enabled'; }
 is_running_nft_file() { [ -s "$nftMainFile" ]; }
-is_running_nft() { "$nft" list table inet "$nftTable" | grep chain | grep -q "${nftPrefix}_mark_" >/dev/null 2>&1; }
+is_running_nft() { "$nft" list table inet "$nftTable" | grep chain | grep -q "${nftPrefix:+${nftPrefix}_}mark_" >/dev/null 2>&1; }
 check_nft() { [ -x "$nft" ]; }
 check_agh() { [ -x "$agh" ] && { [ -s "$aghConfigFile" ] || [ -s "${agh%/*}/AdGuardHome.yaml" ]; }; }
 check_dnsmasq() { command -v dnsmasq >/dev/null 2>&1; }
@@ -950,18 +950,18 @@ nft_file() {
 			{ echo '#!/usr/sbin/nft -f'; echo ''; } > "$nftTempFile"
 			# Create pbr chains in fw4 table
 			for chain in dstnat $chainsList; do
-				echo "add chain inet $nftTable ${nftPrefix}_${chain} {}" >> "$nftTempFile"
+				echo "add chain inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} {}" >> "$nftTempFile"
 			done
 			echo "" >> "$nftTempFile"
 			# Add jump rules from fw4 chains to pbr chains
-			echo "add rule inet $nftTable dstnat jump ${nftPrefix}_dstnat" >> "$nftTempFile"
-			echo "add rule inet $nftTable mangle_prerouting jump ${nftPrefix}_prerouting" >> "$nftTempFile"
-			echo "add rule inet $nftTable mangle_output jump ${nftPrefix}_output" >> "$nftTempFile"
-			echo "add rule inet $nftTable mangle_forward jump ${nftPrefix}_forward" >> "$nftTempFile"
+			echo "add rule inet $nftTable dstnat jump ${nftPrefix:+${nftPrefix}_}dstnat" >> "$nftTempFile"
+			echo "add rule inet $nftTable mangle_prerouting jump ${nftPrefix:+${nftPrefix}_}prerouting" >> "$nftTempFile"
+			echo "add rule inet $nftTable mangle_output jump ${nftPrefix:+${nftPrefix}_}output" >> "$nftTempFile"
+			echo "add rule inet $nftTable mangle_forward jump ${nftPrefix:+${nftPrefix}_}forward" >> "$nftTempFile"
 			echo "" >> "$nftTempFile"
 			# Insert PBR guards at the top of pbr chains so first PBR match wins, while preserving foreign marks.
 			for chain in $chainsList; do
-				echo "add rule inet $nftTable ${nftPrefix}_${chain} ${nftRuleParams:+$nftRuleParams }meta mark & $fw_mask != 0 return" >> "$nftTempFile"
+				echo "add rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${nftRuleParams:+$nftRuleParams }meta mark & $fw_mask != 0 return" >> "$nftTempFile"
 			done
 		;;
 		create:netifd)
@@ -1036,8 +1036,8 @@ nftset() {
 	local command="$1" iface="$2" target="${3:-dst}" type="${4:-ip}" uid="$5" comment="$6" param="$7" mark="$7"
 	local nftset4 nftset6 i param4 param6
 	local ipv4_error=1 ipv6_error=1
-	nftset4="${nftPrefix}${iface:+_$iface}_4${target:+_$target}${type:+_$type}${uid:+_$uid}"
-	nftset6="${nftPrefix}${iface:+_$iface}_6${target:+_$target}${type:+_$type}${uid:+_$uid}"
+	nftset4="${nftPrefix:+${nftPrefix}_}${iface:+${iface}_}4${target:+_$target}${type:+_$type}${uid:+_$uid}"
+	nftset6="${nftPrefix:+${nftPrefix}_}${iface:+${iface}_}6${target:+_$target}${type:+_$type}${uid:+_$uid}"
 
 	if [ "${#nftset4}" -gt '255' ]; then
 		json add error 'errorNftsetNameTooLong' "$nftset4"
@@ -1096,20 +1096,20 @@ nftset() {
 					nft6 add set inet "$nftTable" "$nftset6" "{ type ipv6_addr; $nftSetParams comment \"$comment\";}" && ipv6_error=0
 					case "$target" in
 						dst)
-							nft4 add rule inet "$nftTable" "${nftPrefix}_prerouting" "${nftIPv4Flag}" daddr "@${nftset4}" "${nftRuleParams}" goto "${nftPrefix}_mark_${mark}" && ipv4_error=0
-							nft6 add rule inet "$nftTable" "${nftPrefix}_prerouting" "${nftIPv6Flag}" daddr "@${nftset6}" "${nftRuleParams}" goto "${nftPrefix}_mark_${mark}" && ipv6_error=0
+							nft4 add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "${nftIPv4Flag}" daddr "@${nftset4}" "${nftRuleParams}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv4_error=0
+							nft6 add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "${nftIPv6Flag}" daddr "@${nftset6}" "${nftRuleParams}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv6_error=0
 						;;
 						src)
-							nft4 add rule inet "$nftTable" "${nftPrefix}_prerouting" "${nftIPv4Flag}" saddr "@${nftset4}" "${nftRuleParams}" goto "${nftPrefix}_mark_${mark}" && ipv4_error=0
-							nft6 add rule inet "$nftTable" "${nftPrefix}_prerouting" "${nftIPv6Flag}" saddr "@${nftset6}" "${nftRuleParams}" goto "${nftPrefix}_mark_${mark}" && ipv6_error=0
+							nft4 add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "${nftIPv4Flag}" saddr "@${nftset4}" "${nftRuleParams}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv4_error=0
+							nft6 add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "${nftIPv6Flag}" saddr "@${nftset6}" "${nftRuleParams}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv6_error=0
 						;;
 					esac
 					;;
 				mac)
 					nft4 add set inet "$nftTable" "$nftset4" "{ type ether_addr; $nftSetParams comment \"$comment\"; }" && ipv4_error=0
 					nft6 add set inet "$nftTable" "$nftset6" "{ type ether_addr; $nftSetParams comment \"$comment\"; }" && ipv6_error=0
-					nft4 add rule inet "$nftTable" "${nftPrefix}_prerouting" ether saddr "@${nftset4}" "${nftRuleParams}" goto "${nftPrefix}_mark_${mark}" && ipv4_error=0
-					nft6 add rule inet "$nftTable" "${nftPrefix}_prerouting" ether saddr "@${nftset6}" "${nftRuleParams}" goto "${nftPrefix}_mark_${mark}" && ipv6_error=0
+					nft4 add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" ether saddr "@${nftset4}" "${nftRuleParams}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv4_error=0
+					nft6 add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" ether saddr "@${nftset6}" "${nftRuleParams}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv6_error=0
 					;;
 				esac
 		;;
@@ -1124,18 +1124,18 @@ nftset() {
 				ip|net)
 					case "$target" in
 						dst)
-							nft_call delete rule inet "$nftTable" "${nftPrefix}_prerouting" "$nftIPv4Flag" daddr "@${nftset4}" goto "${nftPrefix}_mark_${mark}" && ipv4_error=0
-							nft_call delete rule inet "$nftTable" "${nftPrefix}_prerouting" "$nftIPv6Flag" daddr "@${nftset6}" goto "${nftPrefix}_mark_${mark}" && ipv6_error=0
+							nft_call delete rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "$nftIPv4Flag" daddr "@${nftset4}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv4_error=0
+							nft_call delete rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "$nftIPv6Flag" daddr "@${nftset6}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv6_error=0
 						;;
 						src)
-							nft_call delete rule inet "$nftTable" "${nftPrefix}_prerouting" "$nftIPv4Flag" saddr "@${nftset4}" goto "${nftPrefix}_mark_${mark}" && ipv4_error=0
-							nft_call delete rule inet "$nftTable" "${nftPrefix}_prerouting" "$nftIPv6Flag" saddr "@${nftset6}" goto "${nftPrefix}_mark_${mark}" && ipv6_error=0
+							nft_call delete rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "$nftIPv4Flag" saddr "@${nftset4}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv4_error=0
+							nft_call delete rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "$nftIPv6Flag" saddr "@${nftset6}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv6_error=0
 						;;
 					esac
 					;;
 				mac)
-					nft_call delete rule inet "$nftTable" "${nftPrefix}_prerouting" "ether" saddr "@${nftset4}" goto "${nftPrefix}_mark_${mark}" && ipv4_error=0
-					nft_call delete rule inet "$nftTable" "${nftPrefix}_prerouting" "ether" saddr "@${nftset6}" goto "${nftPrefix}_mark_${mark}" && ipv6_error=0
+					nft_call delete rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "ether" saddr "@${nftset4}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv4_error=0
+					nft_call delete rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting" "ether" saddr "@${nftset6}" goto "${nftPrefix:+${nftPrefix}_}mark_${mark}" && ipv6_error=0
 					;;
 				esac
 		;;
@@ -1549,26 +1549,26 @@ netifd() {
 					[ "$rt_name" = 'main' ] || echo "${_tid} ${rt_name}" >> "$rtTablesFile"
 						nft_file 'sed' 'temp' "\#${_mark}#d"
 					fi
-					if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${_mark}"; then
-						nft add chain inet "$nftTable" "${nftPrefix}_mark_${_mark}"
-						nft add rule inet "$nftTable" "${nftPrefix}_mark_${_mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${_mark}"
-						nft add rule inet "$nftTable" "${nftPrefix}_mark_${_mark} return"
+					if ! nft_file 'match' 'temp' "${nftPrefix:+${nftPrefix}_}mark_${_mark}"; then
+						nft add chain inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${_mark}"
+						nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${_mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${_mark}"
+						nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${_mark} return"
 					fi
 					local dscp="$(uci_get "$packageName" 'config' "${iface}_dscp")"
 					if [ "${dscp:-0}" -ge '1' ] && [ "${dscp:-0}" -le '63' ]; then
 						if ! is_split_uplink || ! is_uplink6 "$iface"; then
-							nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv4Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${_mark}"
+							nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting ${nftIPv4Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${_mark}"
 						fi
 						if [ -n "$ipv6_enabled" ] && { ! is_split_uplink || ! is_uplink4 "$iface"; }; then
-							nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv6Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${_mark}"
+							nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting ${nftIPv6Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${_mark}"
 						fi
 					fi
 					if [ "$iface" = "$icmp_interface" ]; then
 						if ! is_split_uplink || ! is_uplink6 "$iface"; then
-							nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv4Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${_mark}"
+							nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}output ${nftIPv4Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${_mark}"
 						fi
 						if [ -n "$ipv6_enabled" ] && { ! is_split_uplink || ! is_uplink4 "$iface"; }; then
-							nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv6Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${_mark}"
+							nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}output ${nftIPv6Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${_mark}"
 						fi
 					fi
 
@@ -1747,8 +1747,8 @@ dns_policy_routing() {
 			fi
 		fi
 
-		param4="$nftInsertOption rule inet ${nftTable} ${nftPrefix}_${chain} ${param4} ${nftRuleParams} meta nfproto ipv4 ${proto_i} ${dest4} comment \"$name\""
-		param6="$nftInsertOption rule inet ${nftTable} ${nftPrefix}_${chain} ${param6} ${nftRuleParams} meta nfproto ipv6 ${proto_i} ${dest6} comment \"$name\""
+		param4="$nftInsertOption rule inet ${nftTable} ${nftPrefix:+${nftPrefix}_}${chain} ${param4} ${nftRuleParams} meta nfproto ipv4 ${proto_i} ${dest4} comment \"$name\""
+		param6="$nftInsertOption rule inet ${nftTable} ${nftPrefix:+${nftPrefix}_}${chain} ${param6} ${nftRuleParams} meta nfproto ipv6 ${proto_i} ${dest6} comment \"$name\""
 
 		local ipv4_error='0' ipv6_error='0'
 		if [ "$pbrNftPrevParam4" != "$param4" ] && \
@@ -1808,8 +1808,8 @@ policy_routing() {
 		dest4="tproxy $nftIPv4Flag to: $(get_xray_traffic_port "$iface") accept"
 		dest6="tproxy $nftIPv6Flag to: $(get_xray_traffic_port "$iface") accept"
 	elif [ -n "$mark" ]; then
-		dest4="goto ${nftPrefix}_mark_${mark}"
-		dest6="goto ${nftPrefix}_mark_${mark}"
+		dest4="goto ${nftPrefix:+${nftPrefix}_}mark_${mark}"
+		dest6="goto ${nftPrefix:+${nftPrefix}_}mark_${mark}"
 	elif [ "$iface" = "ignore" ]; then
 		dest4="return"
 		dest6="return"
@@ -1862,8 +1862,8 @@ policy_routing() {
 				local target='src' type='ip'
 				if resolver 'create_resolver_set' "$iface" "$target" "$type" "$uid" "$name" && \
 					resolver 'add_resolver_element' "$iface" "$target" "$type" "$uid" "$name" "$value"; then
-					param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }@${nftPrefix}_${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
-					param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }@${nftPrefix}_${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
+					param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
+					param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
 				else
 					local inline_set_ipv4='' inline_set_ipv6='' d=''
 					unset src_inline_set_ipv4_empty_flag
@@ -1904,8 +1904,8 @@ policy_routing() {
 				local target='dst' type='ip'
 				if resolver 'create_resolver_set' "$iface" "$target" "$type" "$uid" "$name" && \
 					resolver 'add_resolver_element' "$iface" "$target" "$type" "$uid" "$name" "$value"; then
-					param4="${param4:+$param4 }${nftIPv4Flag} daddr ${negation:+$negation }@${nftPrefix}_${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
-					param6="${param6:+$param6 }${nftIPv6Flag} daddr ${negation:+$negation }@${nftPrefix}_${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
+					param4="${param4:+$param4 }${nftIPv4Flag} daddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
+					param6="${param6:+$param6 }${nftIPv6Flag} daddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
 				else
 					local inline_set_ipv4='' inline_set_ipv6='' d=''
 					unset dest_inline_set_ipv4_empty_flag
@@ -1957,8 +1957,8 @@ policy_routing() {
 			local ipv4_error='0' ipv6_error='0'
 			local dest_i dest4 dest6
 			chain='dstnat'
-			param4="$nftInsertOption rule inet $nftTable ${nftPrefix}_${chain} ${nftRuleParams} meta nfproto ipv4 $param4"
-			param6="$nftInsertOption rule inet $nftTable ${nftPrefix}_${chain} ${nftRuleParams} meta nfproto ipv6 $param6"
+			param4="$nftInsertOption rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${nftRuleParams} meta nfproto ipv4 $param4"
+			param6="$nftInsertOption rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${nftRuleParams} meta nfproto ipv6 $param6"
 			dest_udp_53="udp dport 53 redirect to :${torDnsPort} comment \"Tor-DNS-UDP\""
 			dest_tcp_80="tcp dport 80 redirect to :${torTrafficPort} comment \"Tor-HTTP-TCP\""
 			dest_udp_80="udp dport 80 redirect to :${torTrafficPort} comment \"Tor-HTTP-UDP\""
@@ -1984,8 +1984,8 @@ policy_routing() {
 				fi
 			done
 		else
-			param4="$nftInsertOption rule inet $nftTable ${nftPrefix}_${chain} ${param4} ${nftRuleParams} ${dest4} comment \"$name\""
-			param6="$nftInsertOption rule inet $nftTable ${nftPrefix}_${chain} ${param6} ${nftRuleParams} ${dest6} comment \"$name\""
+			param4="$nftInsertOption rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${param4} ${nftRuleParams} ${dest4} comment \"$name\""
+			param6="$nftInsertOption rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${param6} ${nftRuleParams} ${dest6} comment \"$name\""
 			local ipv4_error='0' ipv6_error='0'
 			if [ "$pbrNftPrevParam4" != "$param4" ] && \
 				[ -z "$src_inline_set_ipv4_empty_flag" ] && [ -z "$dest_inline_set_ipv4_empty_flag" ] && \
@@ -2216,18 +2216,18 @@ interface_routing() {
 					try ip -4 rule replace fwmark "${mark}/${fw_mask}" table "$tid" priority "$priority" || ipv4_error=1
 				fi
 
-				if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${mark}"; then
-					nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}"
-					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
-					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return"
+				if ! nft_file 'match' 'temp' "${nftPrefix:+${nftPrefix}_}mark_${mark}"; then
+					nft add chain inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${mark} return"
 				fi
 
 				dscp="$(uci_get "$packageName" 'config' "${iface}_dscp" '0')"
 				if [ "$dscp" -ge '1' ] && [ "$dscp" -le '63' ]; then
-					nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv4Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting ${nftIPv4Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${mark}"
 				fi
 				if [ "$iface" = "$icmp_interface" ]; then
-					nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv4Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}output ${nftIPv4Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${mark}"
 				fi
 			fi
 
@@ -2254,18 +2254,18 @@ interface_routing() {
 					try ip -6 rule replace fwmark "${mark}/${fw_mask}" table "$tid" priority "$priority" || ipv6_error=1
 				fi
 
-				if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${mark}"; then
-					nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}"
-					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
-					nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return"
+				if ! nft_file 'match' 'temp' "${nftPrefix:+${nftPrefix}_}mark_${mark}"; then
+					nft add chain inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}mark_${mark} return"
 				fi
 
 				dscp="$(uci_get "$packageName" 'config' "${iface}_dscp" '0')"
 				if [ "$dscp" -ge '1' ] && [ "$dscp" -le '63' ]; then
-					nft add rule inet "$nftTable" "${nftPrefix}_prerouting ${nftIPv6Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}prerouting ${nftIPv6Flag} dscp ${dscp} ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${mark}"
 				fi
 				if [ "$iface" = "$icmp_interface" ]; then
-					nft add rule inet "$nftTable" "${nftPrefix}_output ${nftIPv6Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix}_mark_${mark}"
+					nft add rule inet "$nftTable" "${nftPrefix:+${nftPrefix}_}output ${nftIPv6Flag} protocol icmp ${nftRuleParams} goto ${nftPrefix:+${nftPrefix}_}mark_${mark}"
 				fi
 			fi
 
@@ -3025,7 +3025,7 @@ status_service() {
 	echo "$_SEPARATOR_"
 	echo "$packageName chains - policies"
 	for i in $chainsList dstnat; do
-		"$nft" -a list table inet "$nftTable" | sed -n "/chain ${nftPrefix}_${i} {/,/\t}/p"
+		"$nft" -a list table inet "$nftTable" | sed -n "/chain ${nftPrefix:+${nftPrefix}_}${i} {/,/\t}/p"
 	done
 	echo "$_SEPARATOR_"
 	echo "$packageName chains - marking"
