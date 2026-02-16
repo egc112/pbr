@@ -4,8 +4,6 @@ name: Build OpenWrt Package
 
 on:
   push:
-    branches:
-      - 1.2.1
   workflow_dispatch:
 
 jobs:
