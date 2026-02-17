@@ -206,7 +206,7 @@ resolverWorkingFlag=
 . "${IPKG_INSTROOT}/usr/share/libubox/jshn.sh"
 
 debug() { local i j; for i in "$@"; do eval "j=\$$i"; logger "${packageName:+-t ${packageName}}" "${i}: ${j} "; done; }
-str_contains() { [ "${1//$2}" != "$1" ]; }
+str_contains() { [ "${1//${2}}" != "$1" ]; }
 str_contains_word() { echo "$1" | grep -qw "$2"; }
 str_extras_to_underscore() { echo "$1" | sed -E 's/[\. ~`!@#$%^&*()+=,<>?;:\/\\-]/_/g; s/_+/_/g'; }
 str_extras_to_space() { echo "$1" | tr ',;{}' ' '; }
@@ -214,7 +214,7 @@ str_first_value_interface() { local i; for i in $1; do is_supported_interface "$
 str_first_value_ipv4() { local i; for i in $1; do is_ipv4 "$i" && { echo "$i"; break; }; done; }
 str_first_value_ipv6() { local i; for i in $1; do is_ipv6 "$i" && { echo "$i"; break; }; done; }
 str_first_word() { echo "${1%% *}"; }
-str_replace() { echo "${1//$2/$3}"; }
+str_replace() { echo "${1//${2}/${3}}"; }
 str_to_dnsmasq_nftset() { echo "$1" | tr ' ' '/'; }
 str_to_lower() { echo "$1" | tr 'A-Z' 'a-z'; }
 str_to_upper() { echo "$1" | tr 'a-z' 'A-Z'; }
@@ -397,7 +397,7 @@ get_mark_nft_chains() { "$nft" list table inet "$nftTable" 2>/dev/null | grep ch
 get_nft_sets() { "$nft" list table inet "$nftTable" 2>/dev/null | grep 'set' | grep "${nftPrefix:+${nftPrefix}_}" | awk '{ print $2 }'; }
 __ubus_get() { ubus call service list "{ 'name': '$packageName' }" | jsonfilter -e "$1"; }
 ubus_get_status() { __ubus_get "@.${packageName}.instances.main.data.status.${1}"; }
-ubus_get_interface() { __ubus_get "@.${packageName}.instances.main.data.gateways[@.name='${1}']${2:+.$2}"; }
+ubus_get_interface() { __ubus_get "@.${packageName}.instances.main.data.gateways[@.name='${1}']${2:+.${2}}"; }
 ubus_get_gateways() { __ubus_get "@.${packageName}.instances.main.data.gateways"; }
 config_get_list() { config_get "$@"; }
 uci_get_device() {
@@ -3172,7 +3172,7 @@ support() {
 
 # shellcheck disable=SC2120
 load_validate_config() {
-	uci_load_validate "$packageName" "$packageName" "$1" "${2}${3:+ $3}" \
+	uci_load_validate "$packageName" "$packageName" "$1" "${2}${3:+ ${3}}" \
 		'enabled:bool:0' \
 		'strict_enforcement:bool:1' \
 		'ipv6_enabled:bool:0' \
@@ -3210,7 +3210,7 @@ load_validate_dns_policy() {
 	local src_addr
 	local dest_dns
 	local dest_dns_port
-	uci_load_validate "$packageName" 'dns_policy' "$1" "${2}${3:+ $3}" \
+	uci_load_validate "$packageName" 'dns_policy' "$1" "${2}${3:+ ${3}}" \
 		'name:string:Untitled' \
 		'enabled:bool:1' \
 		'src_addr:list(neg(or(host,network,macaddr,string)))' \
@@ -3230,7 +3230,7 @@ load_validate_policy() {
 	local src_port
 	local dest_addr
 	local dest_port
-	uci_load_validate "$packageName" 'policy' "$1" "${2}${3:+ $3}" \
+	uci_load_validate "$packageName" 'policy' "$1" "${2}${3:+ ${3}}" \
 		'name:string:Untitled' \
 		'enabled:bool:1' \
 		'interface:or("ignore", "tor", regex("xray_.*"), uci("network", "@interface")):wan' \
@@ -3247,7 +3247,7 @@ load_validate_policy() {
 load_validate_include() {
 	local path=
 	local enabled=
-	uci_load_validate "$packageName" 'include' "$1" "${2}${3:+ $3}" \
+	uci_load_validate "$packageName" 'include' "$1" "${2}${3:+ ${3}}" \
 		'path:file' \
 		'enabled:bool:0' \
 	;
