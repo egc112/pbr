@@ -205,7 +205,7 @@ resolverWorkingFlag=
 # shellcheck disable=SC1091
 . "${IPKG_INSTROOT}/usr/share/libubox/jshn.sh"
 
-debug() { local i j; for i in "$@"; do eval "j=\$$i"; logger "${packageName:+-t $packageName}" "${i}: ${j} "; done; }
+debug() { local i j; for i in "$@"; do eval "j=\$$i"; logger "${packageName:+-t ${packageName}}" "${i}: ${j} "; done; }
 str_contains() { [ "${1//$2}" != "$1" ]; }
 str_contains_word() { echo "$1" | grep -qw "$2"; }
 str_extras_to_underscore() { echo "$1" | sed -E 's/[\. ~`!@#$%^&*()+=,<>?;:\/\\-]/_/g; s/_+/_/g'; }
@@ -281,7 +281,7 @@ filter_options() {
 			opt="${opt/_negative}"
 		fi
 		eval "is_$opt" "${v/\!}" || continue
-		_ret="${_ret:+$_ret }$v"
+		_ret="${_ret:+${_ret} }$v"
 	done
 	echo "$_ret"
 	return 0
@@ -289,7 +289,7 @@ filter_options() {
 inline_set() {
 	local value="$1" inline_set i
 	for i in $value; do
-		inline_set="${inline_set:+$inline_set, }${i#[@\!]}"
+		inline_set="${inline_set:+${inline_set}, }${i#[@\!]}"
 	done
 	echo "$inline_set"
 }
@@ -379,7 +379,7 @@ get_ss_traffic_ports() { local i="$(jsonfilter -i "$ssConfigFile" -q -e "@.inbou
 get_tor_dns_port() { local i="$(grep -m1 DNSPort "$torConfigFile" | awk -F: '{print $2}')"; echo "${i:-9053}"; }
 # shellcheck disable=SC2155
 get_tor_traffic_port() { local i="$(grep -m1 TransPort "$torConfigFile" | awk -F: '{print $2}')"; echo "${i:-9040}"; }
-get_xray_traffic_port() { local i="${1//$xrayIfacePrefix}"; [ "$i" = "$1" ] && unset i; echo "$i"; }
+get_xray_traffic_port() { local i="${1//${xrayIfacePrefix}}"; [ "$i" = "$1" ] && unset i; echo "$i"; }
 get_rt_tables_id() { local iface="$1"; grep "${ipTablePrefix}_${iface}\$" "$rtTablesFile" | awk '{print $1;}'; }
 get_rt_tables_next_id() { echo "$(($(sort -r -n "$rtTablesFile" | grep -o -E -m 1 "^[0-9]+")+1))"; }
 get_rt_tables_non_pbr_next_id() { echo "$(($(grep -v "${ipTablePrefix}_" "$rtTablesFile" | sort -r -n  | grep -o -E -m 1 "^[0-9]+")+1))"; }
@@ -424,7 +424,7 @@ uci_changes() {
 	local CONFIG="$2"
 	local OPTION="$3"
 	[ -s "${UCI_CONFIG_DIR:-/etc/config/}${PACKAGE}" ] && \
-	[ -n "$(/sbin/uci ${UCI_CONFIG_DIR:+-c $UCI_CONFIG_DIR} changes "$PACKAGE${CONFIG:+.$CONFIG}${OPTION:+.$OPTION}")" ]
+	[ -n "$(/sbin/uci ${UCI_CONFIG_DIR:+-c ${UCI_CONFIG_DIR}} changes "$PACKAGE${CONFIG:+.${CONFIG}}${OPTION:+.${OPTION}}")" ]
 }
 uci_get_listen_port() {
 	local __tmp
@@ -738,9 +738,9 @@ load_package_config() {
 
 	local nft_set_flags
 	case "${nft_set_flags_interval}:${nft_set_flags_timeout}" in
-		1:1) nft_set_flags="flags interval, timeout${nft_set_timeout:+; timeout $nft_set_timeout}";;
+		1:1) nft_set_flags="flags interval, timeout${nft_set_timeout:+; timeout ${nft_set_timeout}}";;
 		1:0) nft_set_flags='flags interval';;
-		0:1) nft_set_flags="flags timeout${nft_set_timeout:+; timeout $nft_set_timeout}";;
+		0:1) nft_set_flags="flags timeout${nft_set_timeout:+; timeout ${nft_set_timeout}}";;
 		0:0) nft_set_flags='';;
 	esac
 
@@ -757,10 +757,10 @@ load_package_config() {
 	nftSetParams=" \
 		${nft_set_auto_merge:+ auto-merge;} \
 		${nft_set_counter:+ counter;} \
-		${nft_set_flags:+ $nft_set_flags;} \
-		${nft_set_gc_interval:+ gc_interval "$nft_set_gc_interval";} \
-		${nft_set_policy:+ policy "$nft_set_policy";} \
-		${nft_set_timeout:+ timeout "$nft_set_timeout";} \
+		${nft_set_flags:+ ${nft_set_flags};} \
+		${nft_set_gc_interval:+ gc_interval "${nft_set_gc_interval}";} \
+		${nft_set_policy:+ policy "${nft_set_policy}";} \
+		${nft_set_timeout:+ timeout "${nft_set_timeout}";} \
 		"
 
 	if [ -x "$agh" ] && [ ! -s "$aghConfigFile" ]; then
@@ -897,7 +897,7 @@ load_network() {
 			[ -n "$uplinkGW6" ] && output 2 "Found uplink IPv6 gateway (${param}): $uplinkGW6 $__OK__\n"
 		;;
 	esac
-	uplinkGW="${uplinkGW4:-$uplinkGW6}"
+	uplinkGW="${uplinkGW4:-${uplinkGW6}}"
 }
 
 is_wan_up() {
@@ -961,7 +961,7 @@ nft_file() {
 			echo "" >> "$nftTempFile"
 			# Insert PBR guards at the top of pbr chains so first PBR match wins, while preserving foreign marks.
 			for chain in $chainsList; do
-				echo "add rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${nftRuleParams:+$nftRuleParams }meta mark & $fw_mask != 0 return" >> "$nftTempFile"
+				echo "add rule inet $nftTable ${nftPrefix:+${nftPrefix}_}${chain} ${nftRuleParams:+${nftRuleParams} }meta mark & $fw_mask != 0 return" >> "$nftTempFile"
 			done
 		;;
 		create:netifd)
@@ -1036,8 +1036,8 @@ nftset() {
 	local command="$1" iface="$2" target="${3:-dst}" type="${4:-ip}" uid="$5" comment="$6" param="$7" mark="$7"
 	local nftset4 nftset6 i param4 param6
 	local ipv4_error=1 ipv6_error=1
-	nftset4="${nftPrefix:+${nftPrefix}_}${iface:+${iface}_}4${target:+_$target}${type:+_$type}${uid:+_$uid}"
-	nftset6="${nftPrefix:+${nftPrefix}_}${iface:+${iface}_}6${target:+_$target}${type:+_$type}${uid:+_$uid}"
+	nftset4="${nftPrefix:+${nftPrefix}_}${iface:+${iface}_}4${target:+_${target}}${type:+_${type}}${uid:+_${uid}}"
+	nftset6="${nftPrefix:+${nftPrefix}_}${iface:+${iface}_}6${target:+_${target}}${type:+_${type}}${uid:+_${uid}}"
 
 	if [ "${#nftset4}" -gt '255' ]; then
 		json add error 'errorNftsetNameTooLong' "$nftset4"
@@ -1070,8 +1070,8 @@ nftset() {
 		;;
 		add_dnsmasq_element)
 			[ -n "$ipv6_enabled" ] || unset nftset6
-			grep -qxF "nftset=/${param}/4#inet#${nftTable}#${nftset4}${nftset6:+,6#inet#${nftTable}#$nftset6} # $comment" "$packageDnsmasqFile" && return 0
-			echo "nftset=/${param}/4#inet#${nftTable}#${nftset4}${nftset6:+,6#inet#${nftTable}#$nftset6} # $comment" >> "$packageDnsmasqFile" && ipv4_error=0
+			grep -qxF "nftset=/${param}/4#inet#${nftTable}#${nftset4}${nftset6:+,6#inet#${nftTable}#${nftset6}} # $comment" "$packageDnsmasqFile" && return 0
+			echo "nftset=/${param}/4#inet#${nftTable}#${nftset4}${nftset6:+,6#inet#${nftTable}#${nftset6}} # $comment" >> "$packageDnsmasqFile" && ipv4_error=0
 		;;
 		create)
 			case "$type" in
@@ -1641,7 +1641,7 @@ netifd() {
 	esac
 
 	nft_file 'create' 'netifd'
-	output 1 "Netifd extensions $action ${target_iface:+on $target_iface }"
+	output 1 "Netifd extensions $action ${target_iface:+on ${target_iface} }"
 	uci_remove 'network' 'rule' "main_ipv4"  2>/dev/null
 	uci_remove 'network' 'rule6' "main_ipv6" 2>/dev/null
 	config_load 'network'
@@ -1670,7 +1670,7 @@ netifd() {
 	uci_commit "$packageName"
 	uci_commit 'network'
 	sync
-	output "Restarting network ${action:+(on_$action) }"
+	output "Restarting network ${action:+(on_${action}) }"
 	{ /etc/init.d/network 'reload'; /etc/init.d/firewall 'reload'; } >/dev/null 2>&1 && output_okbn || output_failn
 }
 
@@ -1719,11 +1719,11 @@ dns_policy_routing() {
 			value="$src_addr"
 			first_value="$(str_first_word "$value")"
 			if is_phys_dev "$first_value"; then
-				param4="${param4:+$param4 }iifname ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }iifname ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }iifname ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }iifname ${negation:+${negation} }{ $(inline_set "$value") }"
 			elif is_mac_address "$first_value"; then
-				param4="${param4:+$param4 }ether saddr ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }ether saddr ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }ether saddr ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }ether saddr ${negation:+${negation} }{ $(inline_set "$value") }"
 			elif is_domain "$first_value"; then
 				local inline_set_ipv4='' inline_set_ipv6='' d=''
 				for d in $value; do
@@ -1733,17 +1733,17 @@ dns_policy_routing() {
 					if [ -z "${resolved_ipv4}${resolved_ipv6}" ]; then
 						json add error 'errorFailedToResolve' "$d"
 					else
-					[ -n "$resolved_ipv4" ] && inline_set_ipv4="${inline_set_ipv4:+$inline_set_ipv4, }$resolved_ipv4"
-					[ -n "$resolved_ipv6" ] && inline_set_ipv6="${inline_set_ipv6:+$inline_set_ipv6, }$resolved_ipv6"
+					[ -n "$resolved_ipv4" ] && inline_set_ipv4="${inline_set_ipv4:+${inline_set_ipv4}, }$resolved_ipv4"
+					[ -n "$resolved_ipv6" ] && inline_set_ipv6="${inline_set_ipv6:+${inline_set_ipv6}, }$resolved_ipv6"
 					fi
 				done
 				[ -n "$inline_set_ipv4" ] || inline_set_ipv4_empty_flag='true'
 				[ -n "$inline_set_ipv6" ] || inline_set_ipv6_empty_flag='true'
-				param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }{ $inline_set_ipv4 }"
-				param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }{ $inline_set_ipv6 }"
+				param4="${param4:+${param4} }${nftIPv4Flag} saddr ${negation:+${negation} }{ $inline_set_ipv4 }"
+				param6="${param6:+${param6} }${nftIPv6Flag} saddr ${negation:+${negation} }{ $inline_set_ipv6 }"
 			else
-				param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }${nftIPv4Flag} saddr ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }${nftIPv6Flag} saddr ${negation:+${negation} }{ $(inline_set "$value") }"
 			fi
 		fi
 
@@ -1853,17 +1853,17 @@ policy_routing() {
 			fi
 			first_value_src="$(str_first_word "$value")"
 			if is_phys_dev "$first_value_src"; then
-				param4="${param4:+$param4 }iifname ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }iifname ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }iifname ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }iifname ${negation:+${negation} }{ $(inline_set "$value") }"
 			elif is_mac_address "$first_value_src"; then
-				param4="${param4:+$param4 }ether saddr ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }ether saddr ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }ether saddr ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }ether saddr ${negation:+${negation} }{ $(inline_set "$value") }"
 			elif is_domain "$first_value_src"; then
 				local target='src' type='ip'
 				if resolver 'create_resolver_set' "$iface" "$target" "$type" "$uid" "$name" && \
 					resolver 'add_resolver_element' "$iface" "$target" "$type" "$uid" "$name" "$value"; then
-					param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
-					param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
+					param4="${param4:+${param4} }${nftIPv4Flag} saddr ${negation:+${negation} }@${nftPrefix:+${nftPrefix}_}${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
+					param6="${param6:+${param6} }${nftIPv6Flag} saddr ${negation:+${negation} }@${nftPrefix:+${nftPrefix}_}${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
 				else
 					local inline_set_ipv4='' inline_set_ipv6='' d=''
 					unset src_inline_set_ipv4_empty_flag
@@ -1875,18 +1875,18 @@ policy_routing() {
 						if [ -z "${resolved_ipv4}${resolved_ipv6}" ]; then
 							json add error 'errorFailedToResolve' "$d"
 						else
-						[ -n "$resolved_ipv4" ] && inline_set_ipv4="${inline_set_ipv4:+$inline_set_ipv4, }$resolved_ipv4"
-						[ -n "$resolved_ipv6" ] && inline_set_ipv6="${inline_set_ipv6:+$inline_set_ipv6, }$resolved_ipv6"
+						[ -n "$resolved_ipv4" ] && inline_set_ipv4="${inline_set_ipv4:+${inline_set_ipv4}, }$resolved_ipv4"
+						[ -n "$resolved_ipv6" ] && inline_set_ipv6="${inline_set_ipv6:+${inline_set_ipv6}, }$resolved_ipv6"
 						fi
 					done
 					[ -n "$inline_set_ipv4" ] || src_inline_set_ipv4_empty_flag='true'
 					[ -n "$inline_set_ipv6" ] || src_inline_set_ipv6_empty_flag='true'
-					param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }{ $inline_set_ipv4 }"
-					param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }{ $inline_set_ipv6 }"
+					param4="${param4:+${param4} }${nftIPv4Flag} saddr ${negation:+${negation} }{ $inline_set_ipv4 }"
+					param6="${param6:+${param6} }${nftIPv6Flag} saddr ${negation:+${negation} }{ $inline_set_ipv6 }"
 				fi
 			else
-				param4="${param4:+$param4 }${nftIPv4Flag} saddr ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }${nftIPv6Flag} saddr ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }${nftIPv4Flag} saddr ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }${nftIPv6Flag} saddr ${negation:+${negation} }{ $(inline_set "$value") }"
 			fi
 		fi
 
@@ -1898,14 +1898,14 @@ policy_routing() {
 			fi
 			first_value_dest="$(str_first_word "$value")"
 			if is_phys_dev "$first_value_dest"; then
-				param4="${param4:+$param4 }oifname ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }oifname ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }oifname ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }oifname ${negation:+${negation} }{ $(inline_set "$value") }"
 			elif is_domain "$first_value_dest"; then
 				local target='dst' type='ip'
 				if resolver 'create_resolver_set' "$iface" "$target" "$type" "$uid" "$name" && \
 					resolver 'add_resolver_element' "$iface" "$target" "$type" "$uid" "$name" "$value"; then
-					param4="${param4:+$param4 }${nftIPv4Flag} daddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
-					param6="${param6:+$param6 }${nftIPv6Flag} daddr ${negation:+$negation }@${nftPrefix:+${nftPrefix}_}${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
+					param4="${param4:+${param4} }${nftIPv4Flag} daddr ${negation:+${negation} }@${nftPrefix:+${nftPrefix}_}${iface}_4_${target}_${type}_${uid}${nftset_suffix}"
+					param6="${param6:+${param6} }${nftIPv6Flag} daddr ${negation:+${negation} }@${nftPrefix:+${nftPrefix}_}${iface}_6_${target}_${type}_${uid}${nftset_suffix}"
 				else
 					local inline_set_ipv4='' inline_set_ipv6='' d=''
 					unset dest_inline_set_ipv4_empty_flag
@@ -1917,18 +1917,18 @@ policy_routing() {
 						if [ -z "${resolved_ipv4}${resolved_ipv6}" ]; then
 							json add error 'errorFailedToResolve' "$d"
 						else
-						[ -n "$resolved_ipv4" ] && inline_set_ipv4="${inline_set_ipv4:+$inline_set_ipv4, }$resolved_ipv4"
-						[ -n "$resolved_ipv6" ] && inline_set_ipv6="${inline_set_ipv6:+$inline_set_ipv6, }$resolved_ipv6"
+						[ -n "$resolved_ipv4" ] && inline_set_ipv4="${inline_set_ipv4:+${inline_set_ipv4}, }$resolved_ipv4"
+						[ -n "$resolved_ipv6" ] && inline_set_ipv6="${inline_set_ipv6:+${inline_set_ipv6}, }$resolved_ipv6"
 						fi
 					done
 					[ -n "$inline_set_ipv4" ] || dest_inline_set_ipv4_empty_flag='true'
 					[ -n "$inline_set_ipv6" ] || dest_inline_set_ipv6_empty_flag='true'
-					param4="${param4:+$param4 }${nftIPv4Flag} daddr ${negation:+$negation }{ $inline_set_ipv4 }"
-					param6="${param6:+$param6 }${nftIPv6Flag} daddr ${negation:+$negation }{ $inline_set_ipv6 }"
+					param4="${param4:+${param4} }${nftIPv4Flag} daddr ${negation:+${negation} }{ $inline_set_ipv4 }"
+					param6="${param6:+${param6} }${nftIPv6Flag} daddr ${negation:+${negation} }{ $inline_set_ipv6 }"
 				fi
 			else
-				param4="${param4:+$param4 }${nftIPv4Flag} daddr ${negation:+$negation }{ $(inline_set "$value") }"
-				param6="${param6:+$param6 }${nftIPv6Flag} daddr ${negation:+$negation }{ $(inline_set "$value") }"
+				param4="${param4:+${param4} }${nftIPv4Flag} daddr ${negation:+${negation} }{ $(inline_set "$value") }"
+				param6="${param6:+${param6} }${nftIPv6Flag} daddr ${negation:+${negation} }{ $(inline_set "$value") }"
 			fi
 		fi
 
@@ -1938,8 +1938,8 @@ policy_routing() {
 			else
 				unset negation; value="$src_port";
 			fi
-			param4="${param4:+$param4 }${proto_i:+$proto_i }sport ${negation:+$negation }{ $(inline_set "$value") }"
-			param6="${param6:+$param6 }${proto_i:+$proto_i }sport ${negation:+$negation }{ $(inline_set "$value") }"
+			param4="${param4:+${param4} }${proto_i:+${proto_i} }sport ${negation:+${negation} }{ $(inline_set "$value") }"
+			param6="${param6:+${param6} }${proto_i:+${proto_i} }sport ${negation:+${negation} }{ $(inline_set "$value") }"
 		fi
 
 		if [ -n "$dest_port" ]; then
@@ -1948,8 +1948,8 @@ policy_routing() {
 			else
 				unset negation; value="$dest_port";
 			fi
-			param4="${param4:+$param4 }${proto_i:+$proto_i }dport ${negation:+$negation }{ $(inline_set "$value") }"
-			param6="${param6:+$param6 }${proto_i:+$proto_i }dport ${negation:+$negation }{ $(inline_set "$value") }"
+			param4="${param4:+${param4} }${proto_i:+${proto_i} }dport ${negation:+${negation} }{ $(inline_set "$value") }"
+			param6="${param6:+${param6} }${proto_i:+${proto_i} }dport ${negation:+${negation} }{ $(inline_set "$value") }"
 		fi
 
 		if is_tor "$iface"; then
@@ -2031,7 +2031,7 @@ dns_policy_process() {
 		if is_url "$i"; then
 			i="$(process_url "$i")"
 		fi
-		j="${j:+$j }$i"
+		j="${j:+${j} }$i"
 	done
 	src_addr="$j"
 
@@ -2044,9 +2044,9 @@ dns_policy_process() {
 		for d in $(uci -q get network."$dest_dns_interface".dns); do
 				if ! is_family_mismatch "$src_addr" "$d"; then
 					if is_ipv4 "$d"; then
-						dest_dns_ipv4="${dest_dns_ipv4:-$d}"
+						dest_dns_ipv4="${dest_dns_ipv4:-${d}}"
 					elif is_ipv6 "$d"; then
-						dest_dns_ipv6="${dest_dns_ipv6:-$d}"
+						dest_dns_ipv6="${dest_dns_ipv6:-${d}}"
 					fi
 				fi
 			done
@@ -2119,7 +2119,7 @@ policy_process() {
 		if is_url "$i"; then
 			i="$(process_url "$i")"
 		fi
-		j="${j:+$j }$i"
+		j="${j:+${j} }$i"
 	done
 	src_addr="$j"
 
@@ -2128,7 +2128,7 @@ policy_process() {
 		if is_url "$i"; then
 			i="$(process_url "$i")"
 		fi
-		j="${j:+$j }$i"
+		j="${j:+${j} }$i"
 	done
 	dest_addr="$j"
 
@@ -2153,8 +2153,8 @@ policy_process() {
 							continue
 					fi
 					policy_routing "$name" "$interface" "$filtered_value_src_addr" "$src_port" "$filtered_value_dest_addr" "$dest_port" "$proto" "$chain" "$uid"
-					processed_value_src_addr="${processed_value_src_addr:+$processed_value_src_addr }$filtered_value_src_addr"
-					processed_value_dest_addr="${processed_value_dest_addr:+$processed_value_dest_addr }$filtered_value_dest_addr"
+					processed_value_src_addr="${processed_value_src_addr:+${processed_value_src_addr} }$filtered_value_src_addr"
+					processed_value_dest_addr="${processed_value_dest_addr:+${processed_value_dest_addr} }$filtered_value_dest_addr"
 				fi
 			done
 		fi
@@ -2494,7 +2494,7 @@ process_interface() {
 			eval "enum_mark_${iface//-/_}"='$_mark'
 			eval "enum_priority_${iface//-/_}"='$_priority'
 			eval "enum_tid_${iface//-/_}"='$_tid'
-			ifacesTriggers="${ifacesTriggers:+$ifacesTriggers }$iface"
+			ifacesTriggers="${ifacesTriggers:+${ifacesTriggers} }$iface"
 		;;
 		create)
 			if [ -z "$splitUplinkSecondIface" ]; then
@@ -2522,11 +2522,11 @@ process_interface() {
 			if is_netifd_interface_default "$iface"; then
 				[ "$verbosity" = '1' ] && dispStatus="$_OKB_" || dispStatus="$__OKB__"
 			fi
-			displayText="${iface}/${dispDev:+$dispDev/}${dispGw4}${ipv6_enabled:+/$dispGw6}"
+			displayText="${iface}/${dispDev:+${dispDev}/}${dispGw4}${ipv6_enabled:+/${dispGw6}}"
 			output 2 "Setting up routing for '$displayText' "
 			if interface_routing 'create' "$_tid" "$_mark" "$iface" "$gw4" "$dev4" "$gw6" "$dev6" "$_priority"; then
 				json_add_gateway 'create' "$_tid" "$_mark" "$iface" "$gw4" "$dev4" "$gw6" "$dev6" "$_priority" "$dispStatus"
-				gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ $dispStatus}\n"
+				gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ ${dispStatus}}\n"
 				if is_netifd_interface "$iface"; then output_okb; else output_ok; fi
 			else
 				json add error 'errorFailedSetup' "$displayText"
@@ -2555,7 +2555,7 @@ process_interface() {
 			if is_netifd_interface_default "$iface"; then
 				[ "$verbosity" = '1' ] && dispStatus="$_OKB_" || dispStatus="$__OKB__"
 			fi
-			displayText="${iface}/${dispDev:+$dispDev/}"
+			displayText="${iface}/${dispDev:+${dispDev}/}"
 			interface_routing 'create_user_set' "$_tid" "$_mark" "$iface" "" "$dev4" "" "$dev6" "$_priority"
 		;;
 		destroy)
@@ -2580,7 +2580,7 @@ process_interface() {
 			if is_netifd_interface_default "$iface"; then
 				[ "$verbosity" = '1' ] && dispStatus="$_OKB_" || dispStatus="$__OKB__"
 			fi
-			displayText="${iface}/${dispDev:+$dispDev}"
+			displayText="${iface}/${dispDev:+${dispDev}}"
 			output 2 "Removing routing for '$displayText' "
 			interface_routing 'destroy' "$_tid" "$_mark" "$iface" "" "$dev4" "" "$dev6" "$_priority"
 			if is_netifd_interface "$iface"; then output_okb; else output_ok; fi
@@ -2611,8 +2611,8 @@ process_interface() {
 			if is_netifd_interface_default "$iface"; then
 				[ "$verbosity" = '1' ] && dispStatus="$_OKB_" || dispStatus="$__OKB__"
 			fi
-			displayText="${iface}/${dispDev:+$dispDev/}${dispGw4}${ipv6_enabled:+/$dispGw6}"
-			gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ $dispStatus}\n"
+			displayText="${iface}/${dispDev:+${dispDev}/}${dispGw4}${ipv6_enabled:+/${dispGw6}}"
+			gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ ${dispStatus}}\n"
 		;;
 		reload_interface)
 			if [ -z "$splitUplinkSecondIface" ]; then
@@ -2640,12 +2640,12 @@ process_interface() {
 			if is_netifd_interface_default "$iface"; then
 				[ "$verbosity" = '1' ] && dispStatus="$_OKB_" || dispStatus="$__OKB__"
 			fi
-			displayText="${iface}/${dispDev:+$dispDev/}${dispGw4}${ipv6_enabled:+/$dispGw6}"
+			displayText="${iface}/${dispDev:+${dispDev}/}${dispGw4}${ipv6_enabled:+/${dispGw6}}"
 			if [ "$iface" = "$reloadedIface" ]; then
 				output 2 "Reloading routing for '$displayText' "
 				if interface_routing 'reload_interface' "$_tid" "$_mark" "$iface" "$gw4" "$dev4" "$gw6" "$dev6" "$_priority"; then
 					json_add_gateway 'reload_interface' "$_tid" "$_mark" "$iface" "$gw4" "$dev4" "$gw6" "$dev6" "$_priority" "$dispStatus"
-					gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ $dispStatus}\n"
+					gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ ${dispStatus}}\n"
 					if is_netifd_interface "$iface"; then output_okb; else output_ok; fi
 				else
 					json add error 'errorFailedReload' "$displayText"
@@ -2653,7 +2653,7 @@ process_interface() {
 				fi
 			else
 				json_add_gateway 'skip_interface' "$_tid" "$_mark" "$iface" "$gw4" "$dev4" "$gw6" "$dev6" "$_priority" "$dispStatus"
-				gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ $dispStatus}\n"
+				gatewaySummary="${gatewaySummary}${displayText}${dispStatus:+ ${dispStatus}}\n"
 			fi
 		;;
 	esac
@@ -3000,13 +3000,13 @@ status_service() {
 	if [ -n "$uplink_interface4" ]; then
 		network_get_device dev4 "$uplink_interface4"
 		[ -z "$dev4" ] && network_get_physdev dev4 "$uplink_interface4"
-		status="${status}Uplink (IPv4): ${uplink_interface4}${dev4:+/$dev4}/${uplinkGW4:-0.0.0.0}.\n"
+		status="${status}Uplink (IPv4): ${uplink_interface4}${dev4:+/${dev4}}/${uplinkGW4:-0.0.0.0}.\n"
 	fi
 	if [ -n "$uplink_interface6" ]; then
 		network_get_device dev6 "$uplink_interface6"
 		[ -z "$dev6" ] && network_get_physdev dev6 "$uplink_interface6"
 		[ -z "$dev6" ] && dev6="$dev4"
-		status="${status}Uplink (IPv6): ${uplink_interface6}${dev6:+/$dev6}/${uplinkGW6:-::/0}.\n"
+		status="${status}Uplink (IPv6): ${uplink_interface6}${dev6:+/${dev6}}/${uplinkGW6:-::/0}.\n"
 	fi
 
 	echo "$_SEPARATOR_"
@@ -3050,9 +3050,9 @@ status_service() {
 	wanTID=$(($(get_rt_tables_next_id)-tableCount))
 	for tid in main $(seq "$wanTID" $((wanTID + tableCount - 1))); do
 		status_table="$(grep "^${tid}[[:space:]]" "$rtTablesFile" | awk '{print $2}')"
-		echo "IPv4 table ${tid}${status_table:+ ($status_table)} routes:"
+		echo "IPv4 table ${tid}${status_table:+ (${status_table})} routes:"
 		ip -4 route show table "$tid" | sed 's/^/    /'
-		echo "IPv4 table ${tid}${status_table:+ ($status_table)} rules:"
+		echo "IPv4 table ${tid}${status_table:+ (${status_table})} rules:"
 		ip -4 rule list table "$tid" | sed 's/^/    /'
 		if [ -n "$ipv6_enabled" ]; then
 			echo "$_SEPARATOR_"
