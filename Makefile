@@ -23,6 +23,10 @@ define Package/pbr
 	+jshn \
 	+jsonfilter \
 	+resolveip \
+	+ucode \
+	+ucode-mod-fs \
+	+ucode-mod-uci \
+	+ucode-mod-ubus \
 	+!BUSYBOX_DEFAULT_AWK:gawk \
 	+!BUSYBOX_DEFAULT_GREP:grep \
 	+!BUSYBOX_DEFAULT_SED:sed \
@@ -50,6 +54,10 @@ define Package/pbr/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/pbr $(1)/etc/init.d/pbr
 	$(SED) "s|^\(readonly PKG_VERSION\).*|\1='$(PKG_VERSION)-r$(PKG_RELEASE)'|" $(1)/etc/init.d/pbr
+	$(INSTALL_DIR) $(1)/lib/pbr
+	$(INSTALL_DATA) ./files/lib/pbr/pbr.uc $(1)/lib/pbr/pbr.uc
+	$(INSTALL_DATA) ./files/lib/pbr/cli.uc $(1)/lib/pbr/cli.uc
+	$(SED) "s|^\(\tversion:\).*|\1 '$(PKG_VERSION)-r$(PKG_RELEASE)',|" $(1)/lib/pbr/pbr.uc
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/pbr $(1)/etc/config/pbr
 	$(INSTALL_DIR) $(1)/usr/share/pbr
@@ -59,8 +67,6 @@ define Package/pbr/install
 	$(INSTALL_DATA) ./files/usr/share/pbr/pbr.user.netflix $(1)/usr/share/pbr/pbr.user.netflix
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90-pbr $(1)/etc/uci-defaults/90-pbr
-	$(INSTALL_BIN) ./files/etc/uci-defaults/91-pbr-nft $(1)/etc/uci-defaults/91-pbr-nft
-	$(INSTALL_BIN) ./files/etc/uci-defaults/99-pbr-version $(1)/etc/uci-defaults/99-pbr-version
 endef
 
 define Package/pbr/postinst
