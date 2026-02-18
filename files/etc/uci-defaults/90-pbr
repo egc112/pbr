@@ -57,7 +57,7 @@ fi
 # ── Part 3: Version tracking ─────────────────────────────────────────
 
 uci_set "$packageName" 'config' 'config_compat'  "$packageCompat"
-uci_set "$packageName" 'config' 'config_version' "$PKG_VERSION"
+uci_set "$packageName" 'config' 'config_version' "$($_ucode version)"
 uci_commit "$packageName"
 
 exit 0

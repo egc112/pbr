@@ -32,7 +32,6 @@ else
 fi
 
 readonly packageName='pbr'
-readonly PKG_VERSION='dev-test'
 readonly _ucode="ucode -S -L /lib/${packageName} /lib/${packageName}/cli.uc --"
 
 # shellcheck disable=SC1091

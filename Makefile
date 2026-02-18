@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pbr
 PKG_VERSION:=1.2.3
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 PKG_LICENSE:=AGPL-3.0-or-later
 PKG_MAINTAINER:=Stan Grishin <stangri@melmac.ca>
 
@@ -53,7 +53,6 @@ endef
 define Package/pbr/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/etc/init.d/pbr $(1)/etc/init.d/pbr
-	$(SED) "s|^\(readonly PKG_VERSION\).*|\1='$(PKG_VERSION)-r$(PKG_RELEASE)'|" $(1)/etc/init.d/pbr
 	$(INSTALL_DIR) $(1)/lib/pbr
 	$(INSTALL_DATA) ./files/lib/pbr/pbr.uc $(1)/lib/pbr/pbr.uc
 	$(INSTALL_DATA) ./files/lib/pbr/cli.uc $(1)/lib/pbr/cli.uc

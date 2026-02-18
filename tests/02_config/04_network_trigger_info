@@ -1,0 +1,33 @@
+Testing get_network_trigger_info() returns interface triggers and timing config.
+
+-- Testcase --
+import pbr from 'pbr';
+
+let info = pbr.get_network_trigger_info();
+
+let checks = [
+	['is_object',                  type(info) == 'object'],
+	['has_boot_flag',              exists(info, 'pbrBootFlag')],
+	['boot_flag_false',            info.pbrBootFlag == false],
+	['has_boot_delay',             info.procd_boot_trigger_delay == '5000'],
+	['has_reload_delay',           info.procd_reload_delay == '0'],
+	['has_triggers',               type(info.ifacesTriggers) == 'string'],
+	['triggers_has_wan',           index(info.ifacesTriggers, 'wan') >= 0],
+	['triggers_has_vpn',           index(info.ifacesTriggers, 'vpn') >= 0],
+];
+
+let pass = 0, fail = 0;
+for (let c in checks) {
+	if (c[1]) {
+		pass++;
+	} else {
+		fail++;
+		printf("FAIL: %s (info=%J)\n", c[0], info);
+	}
+}
+printf("network_trigger_info: %d/%d passed\n", pass, pass + fail);
+-- End --
+
+-- Expect stdout --
+network_trigger_info: 8/8 passed
+-- End --

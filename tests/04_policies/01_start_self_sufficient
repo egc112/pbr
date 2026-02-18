@@ -1,0 +1,60 @@
+Testing start() in self-sufficient mode generates correct nft rules.
+
+-- Testcase --
+import pbr from 'pbr';
+
+let result = pbr.start(['on_start']);
+
+// result should be non-null (procd data)
+let checks = [
+	['result_not_null',    result != null],
+	['has_compat',         result.packageCompat == 26],
+	['has_gateways',       type(result.gateways) == 'array'],
+	['has_errors',         type(result.errors) == 'array'],
+	['has_warnings',       type(result.warnings) == 'array'],
+];
+
+// Check that gateways were discovered
+if (result && result.gateways) {
+	let gw_names = map(result.gateways, g => g.name);
+	push(checks, ['gw_has_wan',    index(gw_names, 'wan') >= 0]);
+	push(checks, ['gw_has_vpn',    index(gw_names, 'vpn') >= 0]);
+}
+
+// Check the nft file was written (captured by mock writefile)
+let nft_content = global.mocklib.read_captured('/var/run/pbr.nft');
+if (nft_content) {
+	push(checks, ['nft_has_shebang',     index(nft_content, '#!/usr/sbin/nft -f') >= 0]);
+	push(checks, ['nft_has_pbr_chains',  index(nft_content, 'add chain inet fw4 pbr_prerouting') >= 0]);
+	push(checks, ['nft_has_pbr_output',  index(nft_content, 'add chain inet fw4 pbr_output') >= 0]);
+	push(checks, ['nft_has_pbr_forward', index(nft_content, 'add chain inet fw4 pbr_forward') >= 0]);
+	push(checks, ['nft_has_jump_pre',    index(nft_content, 'add rule inet fw4 mangle_prerouting jump pbr_prerouting') >= 0]);
+	push(checks, ['nft_has_jump_out',    index(nft_content, 'add rule inet fw4 mangle_output jump pbr_output') >= 0]);
+	push(checks, ['nft_has_jump_fwd',    index(nft_content, 'add rule inet fw4 mangle_forward jump pbr_forward') >= 0]);
+	push(checks, ['nft_has_guard',       index(nft_content, 'meta mark & 0x00ff0000 != 0 return') >= 0]);
+	// Check that marking chains exist (for wan interface with mark 0x010000)
+	push(checks, ['nft_has_mark_chain',  index(nft_content, 'add chain inet fw4 pbr_mark_0x010000') >= 0]);
+	push(checks, ['nft_has_mark_set',    index(nft_content, 'meta mark set') >= 0]);
+	// Check policy rules are present
+	push(checks, ['nft_has_route_vpn',   index(nft_content, '"Route via VPN"') >= 0]);
+	push(checks, ['nft_has_ignore_local',index(nft_content, '"Ignore Local"') >= 0]);
+	push(checks, ['nft_has_route_port',  index(nft_content, '"Route by Port"') >= 0]);
+} else {
+	push(checks, ['nft_file_written', false]);
+}
+
+let pass = 0, fail = 0;
+for (let c in checks) {
+	if (c[1]) {
+		pass++;
+	} else {
+		fail++;
+		printf("FAIL: %s\n", c[0]);
+	}
+}
+printf("start_self_sufficient: %d/%d passed\n", pass, pass + fail);
+-- End --
+
+-- Expect stdout --
+start_self_sufficient: 20/20 passed
+-- End --
