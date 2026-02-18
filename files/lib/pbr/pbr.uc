@@ -52,38 +52,38 @@ const sym = {
 
 let state = {
 	script_name: pkg.name,
-	is_tty: null,
+	is_tty: false,
 	output_queue: '',
 	agh_config_file: '/etc/AdGuardHome/AdGuardHome.yaml',
-	iface_mark: null,
-	iface_table_id: null,
-	iface_priority: null,
+	iface_mark: '',
+	iface_table_id: '',
+	iface_priority: '',
 	ifaces_all: '',
 	ifaces_supported: '',
 	ifaces_triggers: '',
-	firewall_wan_zone: null,
-	uplink_gw: null,
-	uplink_gw4: null,
-	uplink_gw6: null,
-	pbr_boot_flag: null,
-	service_start_trigger: null,
-	process_dns_policy_error: null,
-	process_policy_error: null,
-	process_policy_warning: null,
-	resolver_set_supported: null,
-	pbr_nft_prev_param4: null,
-	pbr_nft_prev_param6: null,
+	firewall_wan_zone: '',
+	uplink_gw: '',
+	uplink_gw4: '',
+	uplink_gw6: '',
+	pbr_boot_flag: false,
+	service_start_trigger: '',
+	process_dns_policy_error: false,
+	process_policy_error: false,
+	process_policy_warning: false,
+	resolver_set_supported: false,
+	pbr_nft_prev_param4: '',
+	pbr_nft_prev_param6: '',
 	nft_rule_params: '',
 	nft_set_params: '',
-	tor_dns_port: null,
-	tor_traffic_port: null,
-	dnsmasq_features: null,
+	tor_dns_port: '',
+	tor_traffic_port: '',
+	dnsmasq_features: '',
 	dnsmasq_ubus: null,
-	nft_fw4_dump: null,
-	load_environment_flag: null,
-	load_package_config_flag: null,
-	resolver_working_flag: null,
-	resolver_stored_hash: null,
+	nft_fw4_dump: '',
+	load_environment_flag: false,
+	load_package_config_flag: false,
+	resolver_working_flag: false,
+	resolver_stored_hash: '',
 	_uplink_table_id: '',
 };
 
@@ -97,7 +97,7 @@ let nft_lines = [];
 // state.marks, and the old JSON status file.
 let pbr_status = {
 	// Operation mode: 'netifd', 'mwan4', or 'self-sufficient'
-	mode: null,
+	mode: '',
 	// Per-interface data: { iface_name: { tid, mark, priority, device_ipv4, device_ipv6,
 	//   gateway_ipv4, gateway_ipv6, is_default, action } }
 	interfaces: {},
@@ -265,8 +265,6 @@ let _write = function(level, ...args) {
 	if (level != null && (cfg.verbosity & level) == 0) return;
 
 	// Print to stderr (terminal)
-	if (state.is_tty == null)
-		state.is_tty = (system('[ -t 2 ]') == 0);
 	if (state.is_tty)
 		warn(replace(msg, /\\n/g, '\n'));
 
@@ -461,9 +459,9 @@ function pbr_get_gateway4(iface, dev) {
 	if (!gw || gw == '0.0.0.0') {
 		let out = shell(pkg.ip_full + ' -4 a list dev ' + shell_quote(dev) + ' 2>/dev/null');
 		let m = match(out, /inet\s+([0-9.]+)/);
-		gw = m ? m[1] : null;
+		gw = m ? m[1] : '';
 	}
-	return gw || null;
+	return gw;
 }
 
 function pbr_get_gateway6(iface, dev) {
@@ -472,9 +470,9 @@ function pbr_get_gateway6(iface, dev) {
 	if (!gw || gw == '::/0' || gw == '::0/0' || gw == '::') {
 		let out = shell(pkg.ip_full + ' -6 a list dev ' + shell_quote(dev) + ' 2>/dev/null');
 		let m = match(out, /inet6\s+(\S+)\s+scope global/);
-		gw = m ? m[1] : null;
+		gw = m ? m[1] : '';
 	}
-	return gw || null;
+	return gw;
 }
 
 function filter_options(opt, values) {
@@ -574,7 +572,7 @@ function get_rt_tables_id(iface) {
 	let content = readfile(pkg.rt_tables_file) || '';
 	let pattern = regexp('(?:^|\\n)(\\d+)\\s+' + pkg.ip_table_prefix + '_' + iface + '(?:\\n|$)');
 	let m = match(content, pattern);
-	return m ? m[1] : null;
+	return m ? m[1] : '';
 }
 
 function get_rt_tables_next_id() {
@@ -696,8 +694,8 @@ function get_text(code, ...args) {
 	let a1 = length(args) > 0 ? args[0] : '';
 	let texts = {
 		errorConfigValidation:                 sprintf("Config (%s) validation failure", pkg.config_file),
-		errorNoNft:                            sprintf("Resolver set support (%s) requires nftables, but nft binary cannot be found", cfg.resolver_set || ''),
-		errorResolverNotSupported:             sprintf("Resolver set (%s) is not supported on this system", cfg.resolver_set || ''),
+		errorNoNft:                            sprintf("Resolver set support (%s) requires nftables, but nft binary cannot be found", cfg.resolver_set),
+		errorResolverNotSupported:             sprintf("Resolver set (%s) is not supported on this system", cfg.resolver_set),
 		errorServiceDisabled:                  sprintf("The %s service is currently disabled", pkg.name),
 		errorNoUplinkGateway:                  sprintf("The %s service failed to discover uplink gateway", pkg.service_name),
 		errorNoUplinkInterface:                sprintf("The %s interface not found, you need to set the 'pbr.config.uplink_interface' option", a1),
@@ -749,7 +747,7 @@ function get_text(code, ...args) {
 		errorNetifdInvalidGateway4:            sprintf("Netifd setup: invalid value of netifd_interface_default option '%s'", a1),
 		errorNetifdInvalidGateway6:            sprintf("Netifd setup: invalid value of netifd_interface_default6 option '%s'", a1),
 		warningInvalidOVPNConfig:              sprintf("Invalid OpenVPN config for '%s' interface", a1),
-		warningResolverNotSupported:           sprintf("Resolver set (%s) is not supported on this system", cfg.resolver_set || ''),
+		warningResolverNotSupported:           sprintf("Resolver set (%s) is not supported on this system", cfg.resolver_set),
 		warningPolicyProcessCMD:               sprintf("'%s'", a1),
 		warningTorUnsetParams:                 sprintf("Please unset 'src_addr', 'src_port' and 'dest_port' for policy '%s'", a1),
 		warningTorUnsetProto:                  sprintf("Please unset 'proto' or set 'proto' to 'all' for policy '%s'", a1),
@@ -883,6 +881,7 @@ function parse_options(raw, schema) {
 // ── load_package_config() ───────────────────────────────────────────
 
 function load_package_config(param) {
+	state.is_tty = system('[ -t 2 ]') == 0 ? true : false;
 	let raw = uci_ctx(pkg.name, true).get_all(pkg.name, 'config') || {};
 	cfg = parse_options(raw, config_schema);
 
@@ -941,7 +940,7 @@ function load_package_config(param) {
 		}
 	}
 
-	state.load_environment_flag = null;
+	state.load_environment_flag = false;
 	state.load_package_config_flag = true;
 }
 
@@ -1670,7 +1669,7 @@ function _dnsmasq_instance_config(instance, param) {
 }
 
 function resolver(param, iface, target, type_val, uid, name, value) {
-	switch (cfg.resolver_set || '') {
+	switch (cfg.resolver_set) {
 	case '':
 	case 'none':
 		switch (param) {
@@ -1793,7 +1792,7 @@ function resolver(param, iface, target, type_val, uid, name, value) {
 			if (s && s.size > 0) {
 				let md5_out = shell('md5sum ' + shell_quote(pkg.dnsmasq_file));
 				let m = match(md5_out, /^(\S+)/);
-				state.resolver_stored_hash = m ? m[1] : null;
+				state.resolver_stored_hash = m ? m[1] : '';
 			}
 			return true;
 		}
@@ -2173,7 +2172,7 @@ function dns_policy_process(uid, enabled, name, src_addr, dest_dns, dest_dns_por
 		}
 	}
 
-	state.process_dns_policy_error = null;
+	state.process_dns_policy_error = false;
 	output.verbose("Routing '" + name + "' DNS to " + dest_dns + ':' + dest_dns_port + ' ');
 
 	if (!src_addr) {
@@ -2209,7 +2208,7 @@ function policy_process(uid, enabled, name, interface_name, src_addr, src_port, 
 	dest_addr = replace('' + dest_addr, /[,;{}]/g, ' ');
 	dest_port = replace('' + dest_port, /[,;{}]/g, ' ');
 
-	state.process_policy_error = null;
+	state.process_policy_error = false;
 	proto = lc(proto || '');
 	if (proto == 'auto' || proto == 'all') proto = '';
 
@@ -2496,10 +2495,10 @@ function process_interface(iface, action, reloaded_iface) {
 			uci_ctx('network', true);
 			state.iface_mark = sprintf('0x%06x', int(cfg.uplink_mark));
 			state.iface_priority = cfg.uplink_ip_rules_priority;
-			state.iface_table_id = null;
-			state._uplink_mark = null;
-			state._uplink_priority = null;
-			state._uplink_table_id = null;
+			state.iface_table_id = '';
+			state._uplink_mark = '';
+			state._uplink_priority = '';
+			state._uplink_table_id = '';
 			return 0;
 
 		case 'create_global_rules':
@@ -2782,8 +2781,8 @@ function process_interface(iface, action, reloaded_iface) {
 	// Advance mark/priority/tid for next interface
 	if (!split_uplink_second) {
 		state.iface_mark = sprintf('0x%06x', hex(state.iface_mark) + hex(cfg.uplink_mark));
-		state.iface_priority = +state.iface_priority - 1;
-		state.iface_table_id = +state.iface_table_id + 1;
+		state.iface_priority = '' + (+state.iface_priority - 1);
+		state.iface_table_id = '' + (+state.iface_table_id + 1);
 	}
 	return s;
 }
@@ -2963,7 +2962,7 @@ function netifd(action, target_iface) {
 		net_ctx.delete('network', rt_name + '_ipv6');
 
 		// LAN rules for strict enforcement
-		if (cfg.netifd_strict_enforcement == '1' && str_contains(cfg.netifd_interface_local || '', iface)) {
+		if (cfg.netifd_strict_enforcement == '1' && str_contains(cfg.netifd_interface_local, iface)) {
 			if (action == 'install') {
 				if (cfg.netifd_interface_default) {
 					let rule_name = rt_name + '_ipv4';
@@ -3279,12 +3278,12 @@ function _build_procd_data() {
 		if (iface.action == 'mwan4_strategy') continue;
 		push(gateways, {
 			name: name,
-			device_ipv4: iface.device_ipv4 || '',
-			gateway_ipv4: iface.gateway_ipv4 || '',
-			device_ipv6: iface.device_ipv6 || '',
-			gateway_ipv6: iface.gateway_ipv6 || '',
+			device_ipv4: iface.device_ipv4,
+			gateway_ipv4: iface.gateway_ipv4,
+			device_ipv6: iface.device_ipv6,
+			gateway_ipv6: iface.gateway_ipv6,
 			'default': iface.is_default || false,
-			action: iface.action || '',
+			action: iface.action,
 			table_id: '' + (iface.tid || ''),
 			mark: iface.mark || '',
 			priority: '' + (iface.priority || ''),
@@ -3539,8 +3538,8 @@ function stop() {
 		output.failn();
 	}
 
-	state.iface_mark = null;
-	state.iface_table_id = null;
+	state.iface_mark = '';
+	state.iface_table_id = '';
 
 	output.print('Resetting resolver ');
 	if (resolver('store_hash') && resolver('cleanup'))
@@ -3601,10 +3600,10 @@ function get_network_trigger_info() {
 	});
 
 	return {
-		pbrBootFlag: state.pbr_boot_flag || false,
+		pbrBootFlag: state.pbr_boot_flag,
 		procd_boot_trigger_delay: cfg.procd_boot_trigger_delay || '5000',
 		procd_reload_delay: cfg.procd_reload_delay || '0',
-		ifacesTriggers: state.ifaces_triggers || '',
+		ifacesTriggers: state.ifaces_triggers,
 	};
 }
 

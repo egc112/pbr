@@ -9,9 +9,8 @@ on:
 
 jobs:
   test:
-    name: Functional tests
+    name: Run functional tests
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
