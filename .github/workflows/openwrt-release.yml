@@ -7,8 +7,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    name: Run unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install shunit2
+        run: sudo apt-get update && sudo apt-get install -y shunit2
+
+      - name: Run tests
+        run: bash tests/run_tests.sh
+
   build:
     name: Build for ${{ matrix.version }} / ${{ matrix.target }}
+    needs: test
     runs-on: ubuntu-latest
     env:
       REPO_APK_KEY: ${{ secrets.REPO_APK_KEY }}
