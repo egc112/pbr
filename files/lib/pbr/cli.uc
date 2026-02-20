@@ -27,7 +27,8 @@ case 'status':
 	break;
 
 case 'netifd':
-	pbr.netifd(ARGV[0], ARGV[1]);
+	if (!pbr.netifd(ARGV[0], ARGV[1]))
+		exit(1);
 	break;
 
 case 'support':

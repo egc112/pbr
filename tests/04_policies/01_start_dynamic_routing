@@ -1,4 +1,4 @@
-Testing start() in self-sufficient mode generates correct nft rules.
+Testing start() in dynamic-routing mode generates correct nft rules.
 
 -- Testcase --
 import pbr from 'pbr';
@@ -52,9 +52,9 @@ for (let c in checks) {
 		printf("FAIL: %s\n", c[0]);
 	}
 }
-printf("start_self_sufficient: %d/%d passed\n", pass, pass + fail);
+printf("start_dynamic_routing: %d/%d passed\n", pass, pass + fail);
 -- End --
 
 -- Expect stdout --
-start_self_sufficient: 20/20 passed
+start_dynamic_routing: 20/20 passed
 -- End --

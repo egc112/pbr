@@ -1,7 +1,6 @@
 #!/bin/sh
 # shellcheck disable=SC2015,SC3037,SC3043
 
-readonly packageName='pbr'
 readonly pbrFunctionsFile='/etc/init.d/pbr'
 if [ -s "$pbrFunctionsFile" ]; then
 # shellcheck source=../../etc/init.d/pbr
@@ -43,21 +42,21 @@ config_foreach _remove_wg_server_client include
 
 # ── Part 2: NFT resolver setup ───────────────────────────────────────
 
-if [ "$(uci_get "$packageName" 'config' 'resolver_set')" != 'dnsmasq.nftset' ]; then
+if [ "$(uci_get 'pbr' 'config' 'resolver_set')" != 'dnsmasq.nftset' ]; then
 	if check_dnsmasq_nftset; then
-		output "Setting resolver_set to 'dnsmasq.nftset'... "
-		uci_set "$packageName" 'config' 'resolver_set' 'dnsmasq.nftset' && output_okn || output_failn
+		echo -n "Setting resolver_set to 'dnsmasq.nftset'... "
+		uci_set 'pbr' 'config' 'resolver_set' 'dnsmasq.nftset' && echo "OK" || echo "FAIL"
 	else
-		output "Setting resolver_set to 'none'... "
-		uci_set "$packageName" 'config' 'resolver_set' 'none' && output_okn || output_failn
+		echo -n "Setting resolver_set to 'none'... "
+		uci_set 'pbr' 'config' 'resolver_set' 'none' && echo "OK" || echo "FAIL"
 	fi
-	uci_commit "$packageName"
+	uci_commit 'pbr'
 fi
 
 # ── Part 3: Version tracking ─────────────────────────────────────────
 
-uci_set "$packageName" 'config' 'config_compat'  "$packageCompat"
-uci_set "$packageName" 'config' 'config_version' "$($_ucode version)"
-uci_commit "$packageName"
+[ -n "$packageCompat" ] && uci_set 'pbr' 'config' 'config_compat'  "$packageCompat"
+uci_set 'pbr' 'config' 'config_version' "$($_ucode version)"
+uci_commit 'pbr'
 
 exit 0

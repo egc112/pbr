@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pbr
 PKG_VERSION:=1.2.3
-PKG_RELEASE:=3
+PKG_RELEASE:=5
 PKG_LICENSE:=AGPL-3.0-or-later
 PKG_MAINTAINER:=Stan Grishin <stangri@melmac.ca>
 
@@ -76,8 +76,6 @@ if [ -z "$${IPKG_INSTROOT}" ]; then
 		echo -n "Reinstalling pbr netifd integration... "
 		/etc/init.d/pbr netifd install >/dev/null 2>&1 && echo "OK" || echo "FAIL"
 	}
-	echo -n "Installing rc.d symlink for pbr... "
-	/etc/init.d/pbr enable && echo "OK" || echo "FAIL"
 fi
 exit 0
 endef
@@ -86,10 +84,6 @@ define Package/pbr/prerm
 #!/bin/sh
 # check if we are on real system
 if [ -z "$${IPKG_INSTROOT}" ]; then
-	echo -n "Stopping pbr service... "
-	/etc/init.d/pbr stop >/dev/null 2>&1 && echo "OK" || echo "FAIL"
-	echo -n "Removing rc.d symlink for pbr... "
-	/etc/init.d/pbr disable && echo "OK" || echo "FAIL"
 	/etc/init.d/pbr netifd check && {
 		echo -n "Uninstalling pbr netifd integration... "
 		/etc/init.d/pbr netifd uninstall >/dev/null 2>&1 && echo "OK" || echo "FAIL"

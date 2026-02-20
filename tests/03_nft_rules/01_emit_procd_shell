@@ -24,7 +24,6 @@ let data = {
 	},
 	errors: [],
 	warnings: [],
-	mode: 'self-sufficient',
 };
 
 let shell_output = pbr.emit_procd_shell(data);
@@ -40,7 +39,6 @@ let checks = [
 	['has_gw_string',    index(shell_output, "json_add_string gateways 'wan/eth1/203.0.113.1'") >= 0],
 	['has_errors_arr',   index(shell_output, 'json_add_array errors') >= 0],
 	['has_warnings_arr', index(shell_output, 'json_add_array warnings') >= 0],
-	['has_mode',         index(shell_output, "json_add_string mode 'self-sufficient'") >= 0],
 ];
 
 let pass = 0, fail = 0;
@@ -56,5 +54,5 @@ printf("emit_procd_shell: %d/%d passed\n", pass, pass + fail);
 -- End --
 
 -- Expect stdout --
-emit_procd_shell: 10/10 passed
+emit_procd_shell: 9/9 passed
 -- End --
