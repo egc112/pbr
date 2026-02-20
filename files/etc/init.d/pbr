@@ -2754,6 +2754,10 @@ start_service() {
 			local tid enum_tid
 			tid="$(get_rt_tables_id "$reloadedIface")"
 			enum_tid="$(eval echo "\$enum_tid_${reloadedIface//-/_}")"
+			if is_split_uplink && is_uplink6 "$reloadedIface" && { [ -z "$tid" ] || [ -z "$enum_tid" ]; }; then
+				tid="$(get_rt_tables_id "$uplink_interface4")"
+				enum_tid="$(eval echo "\$enum_tid_${uplink_interface4//-/_}")"
+			fi
 			if [ "$tid" = "$enum_tid" ]; then
 				serviceStartTrigger='on_interface_reload'
 			else
