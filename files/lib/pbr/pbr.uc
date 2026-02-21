@@ -20,7 +20,7 @@ let is_ignored_interface, load_network, nft_check_element, nft_file, resolver;
 const pkg = {
 	name: 'pbr',
 	version: 'dev-test',
-	compat: '26',
+	compat: '27',
 	config_file: '/etc/config/pbr',
 	debug_file: '/var/run/pbr.debug',
 	lock_file: '/var/run/pbr.lock',
@@ -57,38 +57,57 @@ const sym = {
 	WARN: '\033[0;33mWARNING:\033[0m',
 };
 
-// ── Mutable Module State ────────────────────────────────────────────
+// ── Environment ─────────────────────────────────────────────────────
+// Immutable system capabilities, detected once per run.
+// Methods (is_present, detect, load_network, get_downloader,
+// is_running_nft_file) are assigned after utility functions are defined.
+
+let env = {
+	// Platform capabilities (set by env.detect())
+	nft_installed: false,
+	dnsmasq_installed: false,
+	unbound_installed: false,
+	adguardhome_installed: false,
+	dnsmasq_features: '',
+	dnsmasq_nftset_supported: false,
+	resolver_set_supported: false,
+	agh_config_file: '/etc/AdGuardHome/AdGuardHome.yaml',
+
+	// Network (set by env.load_network())
+	firewall_wan_zone: '',
+	ifaces_supported: '',
+	uplink_gw: '',
+	uplink_gw4: '',
+	uplink_gw6: '',
+
+	// Downloader (set lazily by env.get_downloader())
+	_dl_cache: null,
+
+	// Tor (detected from running process)
+	tor_dns_port: '',
+	tor_traffic_port: '',
+
+	// Guard flags
+	_detected: false,
+	_network_output_done: false,
+};
+
+// ── Mutable Runtime State ───────────────────────────────────────────
 
 let state = {
 	script_name: pkg.name,
 	is_tty: false,
 	output_queue: '',
-	agh_config_file: '/etc/AdGuardHome/AdGuardHome.yaml',
 	iface_priority: '',
-	ifaces_all: '',
-	ifaces_supported: '',
 	ifaces_triggers: '',
-	firewall_wan_zone: '',
-	uplink_gw: '',
-	uplink_gw4: '',
-	uplink_gw6: '',
 	service_start_trigger: '',
 	process_dns_policy_error: false,
 	process_policy_error: false,
 	process_policy_warning: false,
-	resolver_set_supported: false,
 	pbr_nft_prev_param4: '',
 	pbr_nft_prev_param6: '',
 	nft_rule_params: '',
 	nft_set_params: '',
-	tor_dns_port: '',
-	tor_traffic_port: '',
-	nft_installed: false,
-	dnsmasq_installed: false,
-	unbound_installed: false,
-	adguardhome_installed: false,
-	dnsmasq_nftset_supported: false,
-	dnsmasq_features: '',
 	dnsmasq_ubus: null,
 	nft_fw4_dump: '',
 	load_environment_flag: false,
@@ -176,13 +195,14 @@ function mkdir_p(path) {
 	return mkdir(path) != null;
 }
 
-function is_present(cmd) {
+env.is_present = function(cmd) {
 	if (index(cmd, '/') >= 0)
 		return access(cmd, 'x') == true;
 	for (let dir in ['/usr/sbin', '/usr/bin', '/sbin', '/bin'])
 		if (access(dir + '/' + cmd, 'x') == true) return true;
 	return false;
-}
+};
+let is_present = (...args) => env.is_present(...args);
 
 // ── ip command wrapper ──────────────────────────────────────────────
 // Wraps ip-full to emulate `ip rule replace` on builds where it's unavailable.
@@ -760,6 +780,7 @@ function get_text(code, ...args) {
 		errorNoDownloadWithSecureReload:       sprintf("Policy '%s' refers to URL which can't be downloaded in 'secure_reload' mode", a1),
 		errorFileSchemaRequiresCurl:           "The file:// schema requires curl, but it's not detected on this system",
 		errorIncompatibleUserFile:             sprintf("Incompatible custom user file detected '%s'", a1),
+		errorUserFileUnsafeNft:                sprintf("Unsafe nft command in custom user file '%s'; only 'add', 'insert' and 'create' are allowed", a1),
 		errorDefaultFw4TableMissing:           sprintf("Default fw4 table '%s' is missing", a1),
 		errorDefaultFw4ChainMissing:           sprintf("Default fw4 chain '%s' is missing", a1),
 		errorRequiredBinaryMissing:            sprintf("Required binary '%s' is missing", a1),
@@ -790,6 +811,33 @@ function get_text(code, ...args) {
 	return texts[code] || sprintf("Unknown error/warning '%s'", code);
 }
 
+// ── Download helpers ─────────────────────────────────────────────────
+
+let _dl_cache;
+function get_downloader() {
+	if (_dl_cache) return _dl_cache;
+	let command, flag, https_supported;
+	if (is_present('curl')) {
+		command = 'curl --silent --insecure';
+		flag = '-o';
+	} else if (is_present('/usr/libexec/wget-ssl')) {
+		command = '/usr/libexec/wget-ssl --no-check-certificate -q';
+		flag = '-O';
+	} else if (shell('wget --version 2>/dev/null | grep -q "+https" && echo yes') == 'yes') {
+		command = 'wget --no-check-certificate -q';
+		flag = '-O';
+	} else {
+		command = 'uclient-fetch --no-check-certificate -q';
+		flag = '-O';
+	}
+	if (shell('curl --version 2>/dev/null | grep -q "Protocols: .*https.*" && echo yes') == 'yes' ||
+		shell('wget --version 2>/dev/null | grep -q "+ssl" && echo yes') == 'yes') {
+		https_supported = true;
+	}
+	_dl_cache = { command, flag, https_supported };
+	return _dl_cache;
+}
+
 // ── process_url() ───────────────────────────────────────────────────
 
 function process_url(url) {
@@ -809,26 +857,7 @@ function process_url(url) {
 		return join(' ', results);
 	};
 
-	let dl_command, dl_flag, dl_https_supported;
-
-	if (is_present('curl')) {
-		dl_command = 'curl --silent --insecure';
-		dl_flag = '-o';
-	} else if (is_present('/usr/libexec/wget-ssl')) {
-		dl_command = '/usr/libexec/wget-ssl --no-check-certificate -q';
-		dl_flag = '-O';
-	} else if (shell('wget --version 2>/dev/null | grep -q "+https" && echo yes') == 'yes') {
-		dl_command = 'wget --no-check-certificate -q';
-		dl_flag = '-O';
-	} else {
-		dl_command = 'uclient-fetch --no-check-certificate -q';
-		dl_flag = '-O';
-	}
-
-	if (shell('curl --version 2>/dev/null | grep -q "Protocols: .*https.*" && echo yes') == 'yes' ||
-		shell('wget --version 2>/dev/null | grep -q "+ssl" && echo yes') == 'yes') {
-		dl_https_supported = true;
-	}
+	let dl = get_downloader();
 
 	let dl_temp_file = shell('mktemp -q -t ' + shell_quote(pkg.name + '_tmp.XXXXXXXX'));
 	if (!dl_temp_file || !stat(dl_temp_file)) {
@@ -839,9 +868,9 @@ function process_url(url) {
 	let result = '';
 	if (is_url_file(url) && !is_present('curl')) {
 		push(status.errors, { code: 'errorFileSchemaRequiresCurl', info: url });
-	} else if (is_url_https(url) && !dl_https_supported) {
+	} else if (is_url_https(url) && !dl.https_supported) {
 		push(status.errors, { code: 'errorDownloadUrlNoHttps', info: url });
-	} else if (sys(dl_command + ' ' + shell_quote(url) + ' ' + dl_flag + ' ' + shell_quote(dl_temp_file)) == 0) {
+	} else if (sys(dl.command + ' ' + shell_quote(url) + ' ' + dl.flag + ' ' + shell_quote(dl_temp_file)) == 0) {
 		result = _sanitize_list(dl_temp_file);
 	} else {
 		push(status.errors, { code: 'errorDownloadUrl', info: url });
@@ -2917,25 +2946,48 @@ function user_file_process(enabled, path) {
 	let _user_file_process_uc = function(path) {
 		output.verbose('Running ' + path + ' ');
 		// Provide an API object for ucode user scripts
+		let _unsafe = false;
+		let _pending = [];
+		let _nft_validate = function(rule_line) {
+			if (!rule_line) return false;
+			if (!match(rule_line, /^(add|insert|create)\s/)) {
+				_unsafe = true;
+				return false;
+			}
+			return true;
+		};
 		let api = {
-			nft_add: function(rule_line) {
-				if (rule_line) push(nft_lines, rule_line);
+			compat: +pkg.compat,
+			table: 'inet ' + pkg.nft_table,
+			nft: function(rule_line) {
+				if (_nft_validate(rule_line))
+					push(_pending, rule_line);
 			},
-			get_interface_mark: function(iface) {
-				return status.get_mark(iface);
+			nft4: function(rule_line) {
+				if (_nft_validate(rule_line))
+					push(_pending, rule_line);
 			},
-			get_interface_chain_var: function(iface) {
-				return status.get_interface(iface)?.chain_name;
+			nft6: function(rule_line) {
+				if (cfg.ipv6_enabled && _nft_validate(rule_line))
+					push(_pending, rule_line);
 			},
-			get_interface_mark_var: function(iface) {
-				return status.get_interface(iface)?.mark;
+			download: function(url) {
+				let dl = get_downloader();
+				let tmp = shell('mktemp -q -t ' + shell_quote(pkg.name + '_user.XXXXXXXX'));
+				if (!tmp || !stat(tmp)) return null;
+				let rc = sys(dl.command + ' ' + shell_quote(url) + ' ' + dl.flag + ' ' + shell_quote(tmp));
+				if (rc != 0) { unlink(tmp); return null; }
+				let content = readfile(tmp) || '';
+				unlink(tmp);
+				return content || null;
 			},
-			get_interface_data: function(iface) {
-				return status.get_interface(iface);
+			get_target_chain: function(iface) {
+				let data = status.get_interface(iface);
+				if (!data) return null;
+				if (is_mwan4_strategy(iface))
+					return data.strategy_name ? ('mwan4_strategy_' + data.strategy_name) : null;
+				return data.chain_name;
 			},
-			nft_prefix: pkg.nft_prefix,
-			nft_table: pkg.nft_table,
-			cfg: cfg,
 		};
 		let code = readfile(path);
 		if (!code) {
@@ -2966,6 +3018,13 @@ function user_file_process(enabled, path) {
 			output.verbose_fail();
 			return 1;
 		}
+		if (_unsafe) {
+			push(status.errors, { code: 'errorUserFileUnsafeNft', info: path });
+			output.verbose_fail();
+			return 1;
+		}
+		for (let line in _pending)
+			push(nft_lines, line);
 		output.verbose_ok();
 		return 0;
 	};

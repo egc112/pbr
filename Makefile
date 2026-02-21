@@ -62,8 +62,8 @@ define Package/pbr/install
 	$(INSTALL_DIR) $(1)/usr/share/pbr
 	$(INSTALL_DATA) ./files/usr/share/pbr/.keep $(1)/usr/share/pbr/.keep
 	$(INSTALL_DATA) ./files/usr/share/pbr/pbr.user.dnsprefetch $(1)/usr/share/pbr/pbr.user.dnsprefetch
-	$(INSTALL_DATA) ./files/usr/share/pbr/pbr.user.aws $(1)/usr/share/pbr/pbr.user.aws
-	$(INSTALL_DATA) ./files/usr/share/pbr/pbr.user.netflix $(1)/usr/share/pbr/pbr.user.netflix
+	$(INSTALL_DATA) ./files/usr/share/pbr/pbr.user.aws.uc $(1)/usr/share/pbr/pbr.user.aws.uc
+	$(INSTALL_DATA) ./files/usr/share/pbr/pbr.user.netflix.uc $(1)/usr/share/pbr/pbr.user.netflix.uc
 	$(INSTALL_DIR) $(1)/etc/uci-defaults
 	$(INSTALL_BIN) ./files/etc/uci-defaults/90-pbr $(1)/etc/uci-defaults/90-pbr
 endef

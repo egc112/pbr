@@ -32,11 +32,11 @@ config include
 	option enabled '0'
 
 config include
-	option path '/usr/share/pbr/pbr.user.aws'
+	option path '/usr/share/pbr/pbr.user.aws.uc'
 	option enabled '0'
 
 config include
-	option path '/usr/share/pbr/pbr.user.netflix'
+	option path '/usr/share/pbr/pbr.user.netflix.uc'
 	option enabled '0'
 
 config dns_policy
