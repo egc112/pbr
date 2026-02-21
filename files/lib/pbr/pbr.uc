@@ -25,6 +25,7 @@ const pkg = {
 	debug_file: '/var/run/pbr.debug',
 	lock_file: '/var/run/pbr.lock',
 	dnsmasq_file: '/var/run/pbr.dnsmasq',
+	mwan4_nft_prefix: 'mwan4',
 	mwan4_nft_iface_file: '/usr/share/nftables.d/ruleset-post/12-mwan4-interfaces.nft',
 	nft_temp_file: '/var/run/pbr.nft',
 	nft_netifd_file: '/usr/share/nftables.d/ruleset-post/20-pbr-netifd.nft',
@@ -87,6 +88,10 @@ let env = {
 	tor_dns_port: '',
 	tor_traffic_port: '',
 
+	// External marks (parsed from nft files by env.detect())
+	netifd_marks: {},
+	mwan4_marks: {},
+
 	// Guard flags
 	_detected: false,
 	_network_output_done: false,
@@ -147,12 +152,6 @@ let status = {
 	get_interface: function(iface) {
 		let iface_key = replace(iface, '-', '_');
 		return this.interfaces[iface_key];
-	},
-	update_netifd_interface: function(iface, tid, mark, priority) {
-		// TODO: collect netifd-managed interface data (tid, mark from ip4table/ip6table)
-	},
-	update_mwan4_interface: function(iface, tid, mark, priority) {
-		// TODO: collect mwan4-managed interface data (mark from mwan4 nft file)
 	},
 };
 
@@ -700,6 +699,18 @@ env.detect = function() {
 		env.resolver_set_supported = !!env.dnsmasq_nftset_supported;
 	} else {
 		env.resolver_set_supported = !cfg.resolver_set || cfg.resolver_set == 'none' || false;
+	}
+	// Parse external marks from netifd/mwan4 nft files
+	let define_re = regexp('^define ' + pkg.nft_prefix + '_(\\S+)_mark = (\\S+)');
+	let netifd_nft = readfile(pkg.nft_netifd_file) || '';
+	for (let line in split(netifd_nft, '\n')) {
+		let m = match(line, define_re);
+		if (m) env.netifd_marks[m[1]] = m[2];
+	}
+	let mwan4_nft = readfile(pkg.mwan4_nft_iface_file) || '';
+	for (let line in split(mwan4_nft, '\n')) {
+		let m = match(line, define_re);
+		if (m) env.mwan4_marks[m[1]] = m[2];
 	}
 	env._detected = true;
 };
@@ -2073,8 +2084,8 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 		let strategy_data = status.get_interface(iface);
 		let sname = strategy_data?.strategy_name;
 		if (sname) {
-			dest4 = 'goto mwan4_strategy_' + sname + '_ipv4';
-			dest6 = 'goto mwan4_strategy_' + sname + '_ipv6';
+			dest4 = 'goto ' + pkg.mwan4_nft_prefix + '_strategy_' + sname + '_ipv4';
+			dest6 = 'goto ' + pkg.mwan4_nft_prefix + '_strategy_' + sname + '_ipv6';
 		} else {
 			state.process_policy_error = true;
 			push(status.errors, { code: 'errorPolicyProcessUnknownFwmark', info: iface });
@@ -2082,8 +2093,13 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 		}
 	} else if (mark) {
 		let chain_name = status.get_interface(iface).chain_name;
-		dest4 = 'goto ' + chain_name;
-		dest6 = 'goto ' + chain_name;
+		if (index(chain_name, pkg.mwan4_nft_prefix) == 0) {
+			dest4 = 'goto ' + chain_name + '_ipv4';
+			dest6 = 'goto ' + chain_name + '_ipv6';
+		} else {
+			dest4 = 'goto ' + chain_name;
+			dest6 = 'goto ' + chain_name;
+		}
 	} else if (iface == 'ignore') {
 		dest4 = 'return';
 		dest6 = 'return';
@@ -2378,14 +2394,8 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 
 	switch (action) {
 	case 'create': {
-		if (is_netifd_interface(iface)) {
-			status.update_netifd_interface(iface, tid, mark, priority);
+		if (is_netifd_interface(iface) || is_mwan4_interface(iface))
 			return 0;
-		}
-		if (is_mwan4_interface(iface)) {
-			status.update_mwan4_interface(iface, tid, mark, priority);
-			return 0;
-		}
 		let table_iface = iface;
 		if (is_split_uplink() && iface == cfg.uplink_interface6)
 			table_iface = cfg.uplink_interface4;
@@ -2612,10 +2622,17 @@ function enumerate_interfaces() {
 		if (!dev6) dev6 = dev4;
 
 		let _mark = iface_mark;
+		let _chain_name = pkg.nft_prefix + '_mark_' + _mark;
 		let _priority = iface_priority;
 		let split_uplink_second = false;
 
-		if (is_split_uplink()) {
+		if (is_netifd_interface(iface) && env.netifd_marks[iface]) {
+			_mark = env.netifd_marks[iface];
+			_chain_name = pkg.nft_prefix + '_mark_' + _mark;
+		} else if (is_mwan4_interface(iface) && env.mwan4_marks[iface]) {
+			_mark = env.mwan4_marks[iface];
+			_chain_name = pkg.mwan4_nft_prefix + '_iface_in_' + iface;
+		} else if (is_split_uplink()) {
 			if (is_uplink4(iface) || is_uplink6(iface)) {
 				if (_uplink_mark && _uplink_priority) {
 					_mark = _uplink_mark;
@@ -2630,7 +2647,7 @@ function enumerate_interfaces() {
 
 		status.set_interface(iface, {
 			mark: _mark, priority: _priority,
-			chain_name: pkg.nft_prefix + '_mark_' + _mark,
+			chain_name: _chain_name,
 			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 			gateway_ipv4: '', gateway_ipv6: '',
 			is_default: false,
@@ -3189,9 +3206,10 @@ function netifd(action, target_iface) {
 					nft_file('filter', 'temp', _mark);
 				}
 				if (!nft_file('match', 'temp', nft_prefix + '_mark_' + _mark)) {
+					nft_add('define ' + nft_prefix + '_' + iface + '_mark = ' + _mark);
 					nft_add('add chain inet ' + nft_table + ' ' + nft_prefix + '_mark_' + _mark);
 					nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + _mark + rule_params +
-						' meta mark set (meta mark & ' + cfg.fw_maskXor + ') | ' + _mark);
+						' meta mark set (meta mark & ' + cfg.fw_maskXor + ') | $' + nft_prefix + '_' + iface + '_mark');
 					nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + _mark + ' return');
 				}
 				let dscp = uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
