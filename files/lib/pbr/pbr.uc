@@ -23,7 +23,6 @@ const pkg = {
 	compat: '26',
 	config_file: '/etc/config/pbr',
 	debug_file: '/var/run/pbr.debug',
-	boot_flag_file: '/var/run/pbr.boot',
 	lock_file: '/var/run/pbr.lock',
 	dnsmasq_file: '/var/run/pbr.dnsmasq',
 	mwan4_nft_iface_file: '/usr/share/nftables.d/ruleset-post/12-mwan4-interfaces.nft',
@@ -3224,8 +3223,6 @@ function start_service(args) {
 	if (!is_wan_up(param)) {
 		output.failn();
 		output.warning(get_text('warningUplinkDown'));
-//	if uplink is still down, fall back to on-boot strategy
-		writefile(pkg.boot_flag_file, '1');
 		return null;
 	}
 
