@@ -995,6 +995,7 @@ nft_file() {
 			if nft_call -c -f "$nftTempFile" && \
 				cp -f "$nftTempFile" "$nftMainFile"; then
 				output_okn
+				fw4 -q reload >/dev/null 2>&1
 			else
 				json add error 'errorNftMainFileInstall' "$nftTempFile"
 				output_failn
@@ -2885,7 +2886,6 @@ service_started() {
 	[ -n "$pbrBootFlag" ] && return 0
 	local error warning c
 	if nft_file 'exists' 'main'; then
-		fw4 -q reload >/dev/null 2>&1
 		resolver 'compare_hash' && resolver 'restart'
 		[ -n "$gatewaySummary" ] && output "$serviceName started with gateways:\n${gatewaySummary}"
 	else
