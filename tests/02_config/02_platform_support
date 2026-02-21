@@ -9,7 +9,6 @@ let ps = result['pbr'];
 let checks = [
 	['has_pbr_key',        ps != null],
 	['nft_installed',      ps.nft_installed == true],
-	['ipset_not_installed', ps.ipset_installed == false],
 	['dnsmasq_nftset',     ps.dnsmasq_nftset_support == true],
 ];
 
@@ -26,5 +25,5 @@ printf("platform_support: %d/%d passed\n", pass, pass + fail);
 -- End --
 
 -- Expect stdout --
-platform_support: 4/4 passed
+platform_support: 3/3 passed
 -- End --

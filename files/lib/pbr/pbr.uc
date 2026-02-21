@@ -14,13 +14,14 @@ import { connect } from 'ubus';
 // without these `let` bindings the early callers would crash with
 // "access to undeclared variable".
 let is_ignored_interface, nft_check_element, nft_file, resolver;
+let get_supported_interfaces, get_platform_support; // rpcd backward-compat wrappers
 
 // ── Constants ───────────────────────────────────────────────────────
 
 const pkg = {
 	name: 'pbr',
 	version: 'dev-test',
-	compat: '27',
+	compat: '28',
 	config_file: '/etc/config/pbr',
 	debug_file: '/var/run/pbr.debug',
 	lock_file: '/var/run/pbr.lock',
@@ -77,6 +78,7 @@ let env = {
 	// Network (set by env.load_network())
 	firewall_wan_zone: '',
 	ifaces_supported: '',
+	webui_interfaces: [],
 	uplink_gw: '',
 	uplink_gw4: '',
 	uplink_gw6: '',
@@ -93,6 +95,8 @@ let env = {
 	mwan4_marks: {},
 
 	// Guard flags
+	_config_loaded: false,
+	_loaded: false,
 	_detected: false,
 	_network_output_done: false,
 };
@@ -115,13 +119,11 @@ let state = {
 	nft_set_params: '',
 	dnsmasq_ubus: null,
 	nft_fw4_dump: '',
-	load_environment_flag: false,
-	load_package_config_flag: false,
 	resolver_working_flag: false,
 	resolver_stored_hash: '',
 };
 
-// Config values loaded by load_package_config()
+// Config values loaded by env.load_config()
 let cfg = {};
 
 // NFT rule accumulator — replaces repeated file appends with a single write at install time.
@@ -892,7 +894,7 @@ function process_url(url) {
 
 // ── Config Schema & Parsing ─────────────────────────────────────────
 
-const config_schema = {
+const config_schema = { // ucode-lsp disable
 	// Booleans (default false)
 	enabled:                  ['bool', false],
 	ipv6_enabled:             ['bool', false],
@@ -956,7 +958,7 @@ const dns_policy_schema = { // ucode-lsp disable
 	dest_dns_port: ['string', ''],
 };
 
-function parse_options(raw, schema) {
+function parse_options(raw, schema) { // ucode-lsp disable
 	let result = {};
 	for (let key in schema) {
 		let spec = schema[key];
@@ -980,10 +982,10 @@ function parse_options(raw, schema) {
 	return result;
 }
 
-// ── load_package_config() ───────────────────────────────────────────
+// ── env.load_config() ───────────────────────────────────────────────
 
-function load_package_config(param) {
-	if (state.load_package_config_flag) return;
+env.load_config = function(param) {
+	if (env._config_loaded) return;
 	state.is_tty = system('[ -t 2 ]') == 0 ? true : false;
 	let raw = uci_ctx(pkg.name, true).get_all(pkg.name, 'config') || {};
 	cfg = parse_options(raw, config_schema);
@@ -1043,14 +1045,14 @@ function load_package_config(param) {
 		}
 	}
 
-	state.load_environment_flag = false;
-	state.load_package_config_flag = true;
-}
+	env._loaded = false;
+	env._config_loaded = true;
+};
 
-// ── load_environment() ──────────────────────────────────────────────
+// ── env.load() ──────────────────────────────────────────────────────
 
-function load_environment(param) {
-	if (state.load_environment_flag) return true;
+env.load = function(param) {
+	if (env._loaded) return true;
 
 	let _check_system_health = function() {
 		let health_fail = false;
@@ -1120,7 +1122,7 @@ function load_environment(param) {
 	switch (param) {
 	case 'on_start':
 		output.info('Loading environment (' + param + ') ');
-		load_package_config(param);
+		env.load_config(param);
 		if (!cfg.enabled) {
 			output.info_failn();
 			push(status.errors, { code: 'errorServiceDisabled' });
@@ -1142,7 +1144,7 @@ function load_environment(param) {
 	case 'on_reload':
 	case 'on_interface_reload':
 		output.info('Loading environment (' + param + ') ');
-		load_package_config(param);
+		env.load_config(param);
 		env.detect();
 		env.load_network(param);
 		output.info_okn();
@@ -1150,23 +1152,25 @@ function load_environment(param) {
 
 	case 'netifd':
 	case 'service_started':
-		load_package_config(param);
+		env.load_config(param);
 		break;
 
 	case 'rpcd':
-		load_package_config(param);
+		env.load_config(param);
 		env.detect();
+		env.load_network(param);
 		break;
 
 	case 'status':
-		load_package_config(param);
+		env.load_config(param);
+		env.detect();
 		env.load_network(param);
 		break;
 	}
 
-	state.load_environment_flag = true;
+	env._loaded = true;
 	return true;
-}
+};
 
 // ── env.load_network() ──────────────────────────────────────────────
 
@@ -1194,6 +1198,21 @@ env.load_network = function(param) {
 			if (is_supported_interface(iface) && !str_contains(env.ifaces_supported, iface))
 				env.ifaces_supported += iface + ' ';
 		});
+
+		// Build webui interfaces list (ifaces_supported + split_uplink filter + extras)
+		let webui = '';
+		for (let n in split(trim(env.ifaces_supported), /\s+/)) {
+			if (is_split_uplink() && is_uplink6(n)) continue;
+			if (!str_contains(webui, n)) webui += n + ' ';
+		}
+		if (is_tor_running()) webui += 'tor ';
+		let si = cfg.supported_interface;
+		if (type(si) == 'array') si = join(' ', si);
+		for (let x in split(si || '', /\s+/)) {
+			if (is_xray(x)) webui += x + ' ';
+		}
+		if (cfg.webui_show_ignore_target == '1') webui += 'ignore ';
+		env.webui_interfaces = split(trim(webui), /\s+/);
 	}
 
 	let dev4 = network_get_device(cfg.uplink_interface4);
@@ -2591,7 +2610,7 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 
 // ── Enumerate Interfaces ────────────────────────────────────────────
 // Single pass: assigns mark/priority/device to each supported interface.
-// Must run after load_package_config() and load_environment().
+// Must run after env.load_config() and env.load().
 
 function enumerate_interfaces() {
 	uci_ctx('network', true);
@@ -3060,7 +3079,7 @@ function user_file_process(enabled, path) {
 // ── Netifd Integration ──────────────────────────────────────────────
 
 function netifd(action, target_iface) {
-	load_environment('netifd');
+	env.load('netifd');
 	status.reset();
 	action = action || 'install';
 
@@ -3292,7 +3311,7 @@ function start_service(args) {
 	if (param == 'on_boot') return null;
 
 	status.reset();
-	if (!load_environment(param)) {
+	if (!env.load(param)) {
 		return null;
 	}
 	output.print('Detecting uplink (' + param + ') ');
@@ -3460,10 +3479,19 @@ function start_service(args) {
 	}
 	let result = {
 		packageCompat: +pkg.compat,
+		version: pkg.version,
 		gateways: gateways,
 		status: {},
 		errors: status.errors,
 		warnings: status.warnings,
+		interfaces: env.webui_interfaces,
+		platform: {
+			nft_installed: env.nft_installed,
+			adguardhome_installed: env.adguardhome_installed,
+			dnsmasq_installed: env.dnsmasq_installed,
+			unbound_installed: env.unbound_installed,
+			dnsmasq_nftset_support: env.dnsmasq_nftset_supported,
+		},
 		ifacesTriggers: state.ifaces_triggers,
 	};
 	if (gw_summary)
@@ -3479,7 +3507,7 @@ function stop_service() {
 		return;
 
 	unlink(pkg.lock_file);
-	load_environment('on_stop');
+	env.load('on_stop');
 	output.print('Resetting routing ');
 	let ok = nft_file('delete', 'main') && cleanup('main_table', 'rt_tables');
 	sys(pkg.ip_full + ' route flush cache');
@@ -3506,7 +3534,7 @@ function stop_service() {
 function service_started(param) {
 	if (param == 'on_boot') return;
 
-	load_environment('service_started');
+	env.load('service_started');
 
 	// Fetch errors/warnings/gateways from ubus (stored by start_service via procd)
 	let svc_info = ubus_call('service', 'list', { name: pkg.name });
@@ -3547,6 +3575,24 @@ function emit_procd_shell(data) {
 	let lines = [];
 
 	push(lines, 'json_add_int packageCompat ' + shell_quote('' + (data.packageCompat || 0)));
+	push(lines, 'json_add_string version ' + shell_quote(data.version || ''));
+
+	// Interfaces array
+	push(lines, 'json_add_array interfaces');
+	for (let iface in (data.interfaces || []))
+		push(lines, 'json_add_string \'\' ' + shell_quote(iface));
+	push(lines, 'json_close_array');
+
+	// Platform support
+	push(lines, 'json_add_object platform');
+	for (let k in keys(data.platform || {})) {
+		let v = data.platform[k];
+		if (type(v) == 'bool')
+			push(lines, 'json_add_boolean ' + k + ' ' + shell_quote(v ? '1' : '0'));
+		else
+			push(lines, 'json_add_string ' + k + ' ' + shell_quote('' + v));
+	}
+	push(lines, 'json_close_object');
 
 	// Gateways array
 	push(lines, 'json_add_array gateways');
@@ -3601,7 +3647,7 @@ function emit_procd_shell(data) {
 // ── Status Service ──────────────────────────────────────────────────
 
 function status_service(param) {
-	load_environment('status');
+	env.load('status');
 
 	let board = ubus_call('system', 'board', {});
 	let openwrt_release = board?.release?.description || 'unknown';
@@ -3744,7 +3790,7 @@ function support() {
 
 function get_init_list(name) {
 	name = name || pkg.name;
-	load_environment('rpcd');
+	env.load('rpcd');
 	let result = {};
 	let enabled = uci_ctx(pkg.name).get(pkg.name, 'config', 'enabled') || '0';
 	result[name] = { enabled: (enabled == '1') };
@@ -3753,7 +3799,7 @@ function get_init_list(name) {
 
 function get_init_status(name) {
 	name = name || pkg.name;
-	load_environment('status');
+	env.load('status');
 
 	let ubus_data = ubus_call('service', 'list', { name: pkg.name });
 	let svc_data = ubus_data?.[pkg.name]?.instances?.main?.data;
@@ -3765,82 +3811,49 @@ function get_init_status(name) {
 	let result = {};
 	result[name] = {
 		enabled: !!cfg.enabled,
-		running: is_service_running_nft(),
+		running: env.is_running_nft_file(),
 		running_iptables: false,
 		running_nft: is_service_running_nft(),
 		running_nft_file: env.is_running_nft_file(),
 		version: pkg.version,
 		packageCompat: +pkg.compat,
 		gateways: gateways,
+		gatewaysList: svc_data?.gateways || [],
+		errors: svc_data?.errors || [],
+		warnings: svc_data?.warnings || [],
+		interfaces: env.webui_interfaces,
+		platform: {
+			nft_installed: env.nft_installed,
+			adguardhome_installed: env.adguardhome_installed,
+			dnsmasq_installed: env.dnsmasq_installed,
+			unbound_installed: env.unbound_installed,
+			dnsmasq_nftset_support: env.dnsmasq_nftset_supported,
+		},
 	};
 	return result;
 }
 
-function get_platform_support(name) {
+get_platform_support = function(name) {
 	name = name || pkg.name;
-	load_environment('rpcd');
+	env.load('rpcd');
 	let result = {};
 	result[name] = {
-		ipset_installed: false,
 		nft_installed: env.nft_installed,
 		adguardhome_installed: env.adguardhome_installed,
 		dnsmasq_installed: env.dnsmasq_installed,
 		unbound_installed: env.unbound_installed,
-		adguardhome_ipset_support: false,
-		dnsmasq_ipset_support: false,
 		dnsmasq_nftset_support: env.dnsmasq_nftset_supported,
 	};
 	return result;
-}
+};
 
-function get_supported_interfaces(name) {
+get_supported_interfaces = function(name) {
 	name = name || pkg.name;
-	load_environment('rpcd');
-
-	let ifaces = '';
-	// From firewall WAN zone
-	let ctx_fw = uci_ctx('firewall', true);
-	let wan_zone = null;
-	ctx_fw.foreach('firewall', 'zone', function(s) {
-		if (s.name == 'wan') wan_zone = s['.name'];
-	});
-	if (wan_zone) {
-		let wan_networks = ctx_fw.get('firewall', wan_zone, 'network');
-		if (type(wan_networks) == 'array') {
-			for (let n in wan_networks) {
-				if (is_split_uplink() && is_uplink6(n)) continue;
-				if (is_supported_interface(n) && !str_contains(ifaces, n))
-					ifaces += n + ' ';
-			}
-		} else if (wan_networks) {
-			if (!(is_split_uplink() && is_uplink6(wan_networks)) &&
-				is_supported_interface(wan_networks) && !str_contains(ifaces, wan_networks))
-				ifaces += wan_networks + ' ';
-		}
-	}
-
-	// From network interfaces
-	let ctx_net = uci_ctx('network', true);
-	ctx_net.foreach('network', 'interface', function(s) {
-		let n = s['.name'];
-		if (is_split_uplink() && is_uplink6(n)) return;
-		if (is_supported_interface(n) && !str_contains(ifaces, n))
-			ifaces += n + ' ';
-	});
-
-	if (is_tor_running()) ifaces += 'tor ';
-	let si = cfg.supported_interface;
-	if (type(si) == 'array') si = join(' ', si);
-	for (let x in split(si || '', /\s+/)) {
-		if (is_xray(x)) ifaces += x + ' ';
-	}
-	if (cfg.webui_show_ignore_target == '1')
-		ifaces += 'ignore ';
-
+	env.load('rpcd');
 	let result = {};
-	result[name] = { interfaces: split(trim(ifaces), /\s+/) };
+	result[name] = { interfaces: env.webui_interfaces };
 	return result;
-}
+};
 
 // ── Module Export ───────────────────────────────────────────────────
 
