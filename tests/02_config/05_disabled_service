@@ -3,7 +3,7 @@ Testing start() returns null when service is disabled.
 -- Testcase --
 import pbr from 'pbr';
 
-let result = pbr.start(['on_start']);
+let result = pbr.start_service(['on_start']);
 -- End --
 
 -- File uci/pbr.json --

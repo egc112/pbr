@@ -3,7 +3,7 @@ Testing that start() discovers gateways correctly from ubus data.
 -- Testcase --
 import pbr from 'pbr';
 
-let result = pbr.start(['on_start']);
+let result = pbr.start_service(['on_start']);
 
 let checks = [];
 if (result && result.gateways) {

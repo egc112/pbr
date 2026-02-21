@@ -3,7 +3,7 @@ Testing start() in dynamic-routing mode generates correct nft rules.
 -- Testcase --
 import pbr from 'pbr';
 
-let result = pbr.start(['on_start']);
+let result = pbr.start_service(['on_start']);
 
 // result should be non-null (procd data)
 let checks = [
@@ -32,8 +32,12 @@ if (nft_content) {
 	push(checks, ['nft_has_jump_out',    index(nft_content, 'add rule inet fw4 mangle_output jump pbr_output') >= 0]);
 	push(checks, ['nft_has_jump_fwd',    index(nft_content, 'add rule inet fw4 mangle_forward jump pbr_forward') >= 0]);
 	push(checks, ['nft_has_guard',       index(nft_content, 'meta mark & 0x00ff0000 != 0 return') >= 0]);
-	// Check that marking chains exist (for wan interface with mark 0x010000)
-	push(checks, ['nft_has_mark_chain',  index(nft_content, 'add chain inet fw4 pbr_mark_0x010000') >= 0]);
+	// Check that nft define statements are present
+	push(checks, ['nft_has_define_mark', index(nft_content, 'define pbr_fw_mark = ') >= 0]);
+	push(checks, ['nft_has_define_mask', index(nft_content, 'define pbr_fw_mask = ') >= 0]);
+	push(checks, ['nft_has_define_iface',index(nft_content, 'define pbr_wan_chain = pbr_mark_') >= 0]);
+	// Check that marking chains exist using literal chain names
+	push(checks, ['nft_has_mark_chain',  index(nft_content, 'add chain inet fw4 pbr_mark_0x') >= 0]);
 	push(checks, ['nft_has_mark_set',    index(nft_content, 'meta mark set') >= 0]);
 	// Check policy rules are present
 	push(checks, ['nft_has_route_vpn',   index(nft_content, '"Route via VPN"') >= 0]);
@@ -56,5 +60,5 @@ printf("start_dynamic_routing: %d/%d passed\n", pass, pass + fail);
 -- End --
 
 -- Expect stdout --
-start_dynamic_routing: 20/20 passed
+start_dynamic_routing: 23/23 passed
 -- End --

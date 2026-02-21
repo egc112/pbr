@@ -12,17 +12,17 @@ let action = shift(ARGV);
 if (action == '--') action = shift(ARGV);
 
 switch (action) {
-case 'start':
-	let start_result = pbr.start(ARGV);
+case 'start_service':
+	let start_result = pbr.start_service(ARGV);
 	if (start_result)
 		print(pbr.emit_procd_shell(start_result));
 	break;
 
-case 'stop':
-	pbr.stop();
+case 'stop_service':
+	pbr.stop_service();
 	break;
 
-case 'status':
+case 'status_service':
 	pbr.status_service(ARGV[0]);
 	break;
 
@@ -40,13 +40,7 @@ case 'version':
 	break;
 
 case 'service_started':
-	pbr.service_started_actions(ARGV[0]);
-	break;
-
-case 'get_network_trigger_info':
-	let info = pbr.get_network_trigger_info();
-	if (info)
-		print(sprintf('%J', info) + '\n');
+	pbr.service_started(ARGV[0]);
 	break;
 
 default:

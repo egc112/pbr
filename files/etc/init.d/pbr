@@ -41,17 +41,16 @@ readonly _ucode="ucode -S -L /lib/${packageName} /lib/${packageName}/cli.uc --"
 # shellcheck disable=SC1091
 . "${IPKG_INSTROOT}/usr/share/libubox/jshn.sh"
 
-netifd()  { $_ucode netifd "$@"; }
-support() { $_ucode support "$@"; }
-version() { $_ucode version "$@"; }
-
+boot() { rc_procd start_service 'on_boot' && service_started 'on_boot'; }
 # shellcheck disable=SC2120
 start_service() {
 	local param="${1:-on_start}"
 	local result
 
+	[ "$param" = 'on_boot' ] && touch "/var/run/${packageName}.boot" && return 0
+
 	# Call ucode to do all work; it returns json_add_* shell commands
-	result="$($_ucode start "$param" "$2")"
+	result="$($_ucode start_service "$param" "$2")"
 	# shellcheck disable=SC2181
 	[ $? -eq 0 ] || return 1
 	[ -n "$result" ] || return 0
@@ -66,58 +65,22 @@ start_service() {
 	procd_close_instance
 	return 0
 }
-
-stop_service() {
-	$_ucode stop
-}
-
-boot() {
-	rc_procd start_service 'on_boot' && service_started 'on_boot'
-}
-
-on_interface_reload() {
-	if [ ! -e "/var/run/${packageName}.lock" ]; then
-		logger -t "$packageName" "Reload on interface change aborted: service is stopped."
-		return 0
-	else
-		rc_procd start_service 'on_interface_reload' "$1"
-	fi
-}
-
+stop_service() { $_ucode stop_service; }
 reload_service() { rc_procd start_service 'on_reload'; }
 restart_service() { rc_procd start_service 'on_restart'; }
-
-status_service() {
-	$_ucode status "$@"
-}
-
-service_stopped() {
-	procd_set_config_changed firewall
-}
-
-service_started() {
-	local param="$1"
-	$_ucode service_started "$param"
-}
-
+status_service() { $_ucode status_service "$@"; }
+service_stopped() { procd_set_config_changed firewall; }
+service_started() { [ "$1" = 'on_boot' ] && return 0; $_ucode service_started "$1"; }
 service_triggers() {
-	local trigger_info n
+	local procd_boot_trigger_delay procd_reload_delay n
+	config_load "$packageName"
+	config_get procd_boot_trigger_delay 'config' 'procd_boot_trigger_delay' '5000'
+	config_get procd_reload_delay       'config' 'procd_reload_delay'       '0'
 
-	trigger_info="$($_ucode get_network_trigger_info)"
-	if [ -z "$trigger_info" ]; then
-		return 0
-	fi
-
-	local pbrBootFlag procd_boot_trigger_delay procd_reload_delay ifacesTriggers
-	eval "$(echo "$trigger_info" | jsonfilter \
-		-e 'pbrBootFlag=@.pbrBootFlag' \
-		-e 'procd_boot_trigger_delay=@.procd_boot_trigger_delay' \
-		-e 'procd_reload_delay=@.procd_reload_delay' \
-		-e 'ifacesTriggers=@.ifacesTriggers')"
-
-	if [ "$pbrBootFlag" = 'true' ] || [ "$pbrBootFlag" = '1' ]; then
+	if [ -e "/var/run/${packageName}.boot" ]; then
+		rm -f "/var/run/${packageName}.boot"
 		printf 'Setting trigger (on_boot) '
-		procd_add_raw_trigger "interface.*.up" "${procd_boot_trigger_delay:-5000}" "/etc/init.d/${packageName}" start && \
+		procd_add_raw_trigger "interface.*.up" "${procd_boot_trigger_delay}" "/etc/init.d/${packageName}" start && \
 			printf '\033[0;32m\xe2\x9c\x93\033[0m\n' || printf '\033[0;31m\xe2\x9c\x97\033[0m\n'
 	else
 		PROCD_RELOAD_DELAY=$(( ${procd_reload_delay:-0} * 1000 ))
@@ -129,14 +92,25 @@ service_triggers() {
 		procd_open_trigger
 			procd_add_config_trigger "config.change" 'openvpn' "/etc/init.d/${packageName}" reload 'on_openvpn_change'
 			procd_add_config_trigger "config.change" "${packageName}" "/etc/init.d/${packageName}" reload
-			if [ -n "$ifacesTriggers" ]; then
-				for n in $ifacesTriggers; do
+			if [ -n "$_pbr_ifaces_triggers" ]; then
+				for n in $_pbr_ifaces_triggers; do
 					procd_add_interface_trigger "interface.*" "$n" "/etc/init.d/${packageName}" on_interface_reload "$n"
 				done
 			fi
 		procd_close_trigger
 	fi
 }
+netifd()  { $_ucode netifd "$@"; }
+on_interface_reload() {
+	if [ ! -e "/var/run/${packageName}.lock" ]; then
+		logger -t "$packageName" "Reload on interface change aborted: service is stopped."
+		return 0
+	else
+		rc_procd start_service 'on_interface_reload' "$1"
+	fi
+}
+support() { $_ucode support "$@"; }
+version() { $_ucode version "$@"; }
 
 # shellcheck disable=SC2120
 load_validate_config() {

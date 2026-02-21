@@ -3,7 +3,7 @@ Testing that IPv6 rules are generated when ipv6_enabled=1.
 -- Testcase --
 import pbr from 'pbr';
 
-let result = pbr.start(['on_start']);
+let result = pbr.start_service(['on_start']);
 
 let nft_content = global.mocklib.read_captured('/var/run/pbr.nft');
 let checks = [];

@@ -3,7 +3,7 @@ Testing start() with on_boot parameter returns null (deferred start).
 -- Testcase --
 import pbr from 'pbr';
 
-let result = pbr.start(['on_boot']);
+let result = pbr.start_service(['on_boot']);
 
 // on_boot should return null — actual start happens via trigger
 if (result == null)

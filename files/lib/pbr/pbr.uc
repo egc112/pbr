@@ -23,6 +23,7 @@ const pkg = {
 	compat: '26',
 	config_file: '/etc/config/pbr',
 	debug_file: '/var/run/pbr.debug',
+	boot_flag_file: '/var/run/pbr.boot',
 	lock_file: '/var/run/pbr.lock',
 	dnsmasq_file: '/var/run/pbr.dnsmasq',
 	mwan4_nft_iface_file: '/usr/share/nftables.d/ruleset-post/12-mwan4-interfaces.nft',
@@ -40,6 +41,9 @@ const pkg = {
 	ss_config_file: '/etc/shadowsocks',
 	tor_config_file: '/etc/tor/torrc',
 	xray_iface_prefix: 'xray_',
+	url: function(fragment) {
+		return sprintf("https://docs.openwrt.melmac.ca/%s/%s/%s", this.name, split(this.version, '-')[0], fragment || '');
+	},
 };
 pkg.service_name = pkg.name + ' ' + pkg.version;
 
@@ -69,7 +73,6 @@ let state = {
 	uplink_gw: '',
 	uplink_gw4: '',
 	uplink_gw6: '',
-	pbr_boot_flag: false,
 	service_start_trigger: '',
 	process_dns_policy_error: false,
 	process_policy_error: false,
@@ -81,6 +84,11 @@ let state = {
 	nft_set_params: '',
 	tor_dns_port: '',
 	tor_traffic_port: '',
+	nft_installed: false,
+	dnsmasq_installed: false,
+	unbound_installed: false,
+	adguardhome_installed: false,
+	dnsmasq_nftset_supported: false,
 	dnsmasq_features: '',
 	dnsmasq_ubus: null,
 	nft_fw4_dump: '',
@@ -94,7 +102,7 @@ let state = {
 let cfg = {};
 
 // NFT rule accumulator — replaces repeated file appends with a single write at install time.
-let nft_lines = [];
+let nft_lines = []; // ucode-lsp disable
 
 // Unified status object — replaces scattered state.gateways, state.gateway_summary,
 // state.marks, and the old JSON status file.
@@ -142,21 +150,6 @@ function uci_ctx(config, reload) {
 		_cursor_loaded[config] = true;
 	}
 	return _cursor;
-}
-
-function uci_has_changes(config) { // ucode-lsp disable
-	return length(uci_ctx(config).changes(config) || []) > 0;
-}
-
-function uci_add_list_if_new(config, section, option, value) {
-	if (!config || !section || !option || !value) return false;
-	let ctx = uci_ctx(config);
-	let current = ctx.get(config, section, option);
-	if (type(current) == 'array' && index(current, value) >= 0) return true;
-	if (current == value) return true;
-	ctx.list_append(config, section, option, value);
-	ctx.save(config);
-	return true;
 }
 
 // ── Shell / System Helpers ──────────────────────────────────────────
@@ -550,37 +543,6 @@ function inline_set(value) {
 	return join(', ', result);
 }
 
-// ── Detection Functions ─────────────────────────────────────────────
-
-function check_nft() {
-	return is_present('nft');
-}
-
-function check_agh() {
-	let agh = shell('command -v AdGuardHome');
-	if (!agh || !is_present(agh)) return false;
-	let content = readfile(state.agh_config_file);
-	if (content && content != '') return true;
-	let alt = dirname(agh) + '/AdGuardHome.yaml';
-	content = readfile(alt);
-	return !!(content && content != '');
-}
-
-function check_dnsmasq() {
-	return is_present('dnsmasq');
-}
-
-function check_unbound() {
-	return is_present('unbound');
-}
-
-function check_dnsmasq_nftset() {
-	if (!state.dnsmasq_features) {
-		state.dnsmasq_features = shell("dnsmasq --version 2>/dev/null | grep -m1 'Compile time options:' | cut -d: -f2") + ' ';
-	}
-	return index(state.dnsmasq_features, ' nftset ') >= 0;
-}
-
 // mwan4 detection and integration functions
 
 function mwan4_is_installed() {
@@ -593,21 +555,6 @@ function mwan4_is_running() { // ucode-lsp disable
 }
 
 // ── Misc helpers ────────────────────────────────────────────────────
-
-
-function get_tor_dns_port() {
-	let content = readfile(pkg.tor_config_file);
-	if (type(content) != 'string' || !content) return '9053';
-	let m = match(content, /DNSPort\s+\S+:(\d+)/); // ucode-lsp disable
-	return m ? m[1] : '9053';
-}
-
-function get_tor_traffic_port() {
-	let content = readfile(pkg.tor_config_file);
-	if (type(content) != 'string' || !content) return '9040';
-	let m = match(content, /TransPort\s+\S+:(\d+)/); // ucode-lsp disable
-	return m ? m[1] : '9040';
-}
 
 function get_rt_tables_id(iface) {
 	let content = readfile(pkg.rt_tables_file) || '';
@@ -659,7 +606,7 @@ function get_external_mark_chains() {
 }
 
 function is_service_running_nft() {
-	if (!is_present('nft')) return false;
+	if (!state.nft_installed) return false;
 	let chains = get_mark_nft_chains();
 	return chains != null && chains != '';
 }
@@ -675,30 +622,9 @@ function get_nft_sets() {
 	return join(' ', results);
 }
 
-function is_bad_user_file_nft_call(filepath) {
-	let content = readfile(filepath) || '';
-	return index(content, '"$nft" list') >= 0 || index(content, '"$nft" -f') >= 0;
-}
-
 function is_running_nft_file() {
 	let s = stat(pkg.nft_main_file);
 	return s != null && s.type == 'file' && s.size > 0;
-}
-
-function sanitize_list(filepath) {
-	let content = readfile(filepath) || '';
-	let lines = split(content, '\n');
-	let seen = {}, results = [];
-	for (let line in lines) {
-		line = replace(line, /#.*/, '');
-		line = trim(line);
-		if (line && !seen[line]) {
-			seen[line] = true;
-			push(results, line);
-		}
-	}
-	sort(results);
-	return join(' ', results);
 }
 
 function resolveip_to_nftset(...args) {
@@ -728,6 +654,35 @@ function ipv4_leases_to_nftset(arg) {
 		}
 	}
 	return join(',', results);
+}
+
+function detect_platform() {
+	if (state.detect_platform_done) return;
+	state.nft_installed = is_present('nft');
+	state.dnsmasq_installed = is_present('dnsmasq');
+	state.unbound_installed = is_present('unbound');
+	let agh = shell('command -v AdGuardHome');
+	if (agh && is_present(agh)) {
+		let content = readfile(state.agh_config_file);
+		if (content && content != '') {
+			state.adguardhome_installed = true;
+		} else {
+			let alt = dirname(agh) + '/AdGuardHome.yaml';
+			content = readfile(alt);
+			state.adguardhome_installed = !!(content && content != '');
+		}
+	}
+	if (state.dnsmasq_installed) {
+		if (!state.dnsmasq_features)
+			state.dnsmasq_features = shell("dnsmasq --version 2>/dev/null | grep -m1 'Compile time options:' | cut -d: -f2") + ' ';
+		state.dnsmasq_nftset_supported = index(state.dnsmasq_features, ' nftset ') >= 0;
+	}
+	if (cfg.resolver_set == 'dnsmasq.nftset') {
+		state.resolver_set_supported = !!state.dnsmasq_nftset_supported;
+	} else {
+		state.resolver_set_supported = !cfg.resolver_set || cfg.resolver_set == 'none' || false;
+	}
+	state.detect_platform_done = true;
 }
 
 function ipv6_leases_to_nftset(arg) {
@@ -761,10 +716,6 @@ function try_ip(...args) {
 }
 
 // ── get_text() ──────────────────────────────────────────────────────
-
-function get_url(fragment) {
-	return sprintf("https://docs.openwrt.melmac.ca/%s/%s/%s", pkg.name, split(pkg.version, '-')[0], fragment || '');
-}
 
 function get_text(code, ...args) {
 	let a1 = length(args) > 0 ? args[0] : '';
@@ -831,11 +782,11 @@ function get_text(code, ...args) {
 		warningOutdatedLuciPackage:            sprintf("The WebUI application is outdated (version %s), please update it", a1),
 		warningDnsmasqInstanceNoConfdir:       sprintf("Dnsmasq instance '%s' targeted in settings, but it doesn't have its own confdir", a1),
 		warningDhcpLanForce:                   sprintf("Please set 'dhcp.%s.force=1' to speed up service start-up", a1),
-		warningSummary:                        sprintf("Warnings encountered, please check %s", get_url('#WarningMessagesDetails')),
+		warningSummary:                        sprintf("Warnings encountered, please check %s", pkg.url('#WarningMessagesDetails')),
 		warningIncompatibleDHCPOption6:        sprintf("Incompatible DHCP Option 6 for interface '%s'", a1),
 		warningNetifdMissingInterfaceLocal:    sprintf("Netifd setup: option netifd_interface_local is missing, assuming '%s'", a1),
 		warningUplinkDown:                     "Uplink/WAN interface is still down, going back to boot mode",
-		warningDynamicRoutingMode:             sprintf("Running in dynamic routing tables mode. Consider installing netifd extensions ('pbr netifd install') or mwan4 for more efficient operation. See %s", get_url('#routing-tables-modes')),
+		warningDynamicRoutingMode:             sprintf("Running in dynamic routing tables mode. Consider installing netifd extensions ('pbr netifd install') or mwan4 for more efficient operation. See %s", pkg.url('#routing-tables-modes')),
 	};
 	return texts[code] || sprintf("Unknown error/warning '%s'", code);
 }
@@ -843,6 +794,22 @@ function get_text(code, ...args) {
 // ── process_url() ───────────────────────────────────────────────────
 
 function process_url(url) {
+	let _sanitize_list = function(filepath) {
+		let content = readfile(filepath) || '';
+		let lines = split(content, '\n');
+		let seen = {}, results = [];
+		for (let line in lines) {
+			line = replace(line, /#.*/, '');
+			line = trim(line);
+			if (line && !seen[line]) {
+				seen[line] = true;
+				push(results, line);
+			}
+		}
+		sort(results);
+		return join(' ', results);
+	};
+
 	let dl_command, dl_flag, dl_https_supported;
 
 	if (is_present('curl')) {
@@ -876,7 +843,7 @@ function process_url(url) {
 	} else if (is_url_https(url) && !dl_https_supported) {
 		push(status.errors, { code: 'errorDownloadUrlNoHttps', info: url });
 	} else if (sys(dl_command + ' ' + shell_quote(url) + ' ' + dl_flag + ' ' + shell_quote(dl_temp_file)) == 0) {
-		result = sanitize_list(dl_temp_file);
+		result = _sanitize_list(dl_temp_file);
 	} else {
 		push(status.errors, { code: 'errorDownloadUrl', info: url });
 	}
@@ -978,6 +945,7 @@ function parse_options(raw, schema) {
 // ── load_package_config() ───────────────────────────────────────────
 
 function load_package_config(param) {
+	if (state.load_package_config_flag) return;
 	state.is_tty = system('[ -t 2 ]') == 0 ? true : false;
 	let raw = uci_ctx(pkg.name, true).get_all(pkg.name, 'config') || {};
 	cfg = parse_options(raw, config_schema);
@@ -1043,112 +1011,123 @@ function load_package_config(param) {
 
 // ── load_environment() ──────────────────────────────────────────────
 
-function load_environment(param, validation_result) {
-	if (state.load_environment_flag) return 0;
+function load_environment(param) {
+	if (state.load_environment_flag) return true;
+
+	let _check_system_health = function() {
+		let health_fail = false;
+		if (!state.nft_installed) {
+			push(status.errors, { code: 'errorNoNft' });
+			health_fail = true;
+		}
+		let auto_inc = uci_ctx('firewall').get('firewall', 'defaults', 'auto_includes');
+		if (auto_inc == '0') {
+			let ctx = uci_ctx('firewall');
+			ctx.delete('firewall', 'defaults', 'auto_includes');
+			ctx.commit('firewall');
+		}
+		let ip_link = shell('readlink /sbin/ip 2>/dev/null');
+		if (ip_link != pkg.ip_full) {
+			push(status.errors, { code: 'errorRequiredBinaryMissing', info: 'ip-full' });
+			health_fail = true;
+		}
+		if (!nft_check_element('table', 'fw4')) {
+			push(status.errors, { code: 'errorDefaultFw4TableMissing', info: 'fw4' });
+			health_fail = true;
+		}
+		if (is_config_enabled('dns_policy') || is_tor_running()) {
+			if (!nft_check_element('chain', 'dstnat')) {
+				push(status.errors, { code: 'errorDefaultFw4ChainMissing', info: 'dstnat' });
+				health_fail = true;
+			}
+		}
+		let chains = split(pkg.chains_list, ' ');
+		for (let c in chains) {
+			if (!nft_check_element('chain', 'mangle_' + c)) {
+				push(status.errors, { code: 'errorDefaultFw4ChainMissing', info: 'mangle_' + c });
+				health_fail = true;
+			}
+		}
+		if (cfg.resolver_set == 'dnsmasq.nftset' && !state.resolver_set_supported) {
+			push(status.warnings, { code: 'warningResolverNotSupported' });
+		}
+		let ctx_dhcp = uci_ctx('dhcp');
+		let ctx_net = uci_ctx('network');
+		ctx_net.foreach('network', 'interface', function(s) {
+			let iface = s['.name'];
+			if (!is_lan(iface)) return;
+			let force = ctx_dhcp.get('dhcp', iface, 'force');
+			if (force == '0') {
+				push(status.warnings, { code: 'warningDhcpLanForce', info: iface });
+			}
+			if (!cfg.resolver_set) return;
+			let dhcp_option = ctx_dhcp.get('dhcp', iface, 'dhcp_option');
+			if (type(dhcp_option) != 'array') return;
+			let ipaddr = ctx_net.get('network', iface, 'ipaddr') || '';
+			let ipaddr_base = split(ipaddr, '/')[0];
+			for (let opt in dhcp_option) {
+				let parts = split(opt, ',');
+				if (length(parts) >= 2) {
+					let option = parts[0];
+					let value = parts[1];
+					if (option == '6' && value != ipaddr_base) {
+						push(status.warnings, { code: 'warningIncompatibleDHCPOption6', info: iface + ': ' + value });
+					}
+				}
+			}
+		});
+		return !health_fail;
+	};
 
 	switch (param) {
-	case 'on_boot':
 	case 'on_start':
 		output.info('Loading environment (' + param + ') ');
-		if (!state.load_package_config_flag) load_package_config(param);
+		load_package_config(param);
 		if (!cfg.enabled) {
 			output.info_failn();
 			push(status.errors, { code: 'errorServiceDisabled' });
 			output.error(get_text('errorServiceDisabled'));
 			output.print("Run the following commands before starting service again:\\n");
 			output.print("uci set " + pkg.name + ".config.enabled='1'; uci commit " + pkg.name + ";\\n");
-			return 1;
+			return false;
 		}
-		if (validation_result != null && validation_result != '' && validation_result != '0' && +validation_result != 0) {
+		detect_platform();
+		if (!_check_system_health()) {
 			output.info_failn();
-			push(status.errors, { code: 'errorConfigValidation' });
-			output.error(get_text('errorConfigValidation'));
-			output.print("Please check if the '" + pkg.config_file + "' contains correct values for config options.\\n");
-			return 1;
+			return false;
 		}
-		// System health check
-		{
-			let health_fail = false;
-			if (!check_nft()) {
-				push(status.errors, { code: 'errorNoNft' });
-				health_fail = true;
-			}
-			let auto_inc = uci_ctx('firewall').get('firewall', 'defaults', 'auto_includes');
-			if (auto_inc == '0') {
-				let ctx = uci_ctx('firewall');
-				ctx.delete('firewall', 'defaults', 'auto_includes');
-				ctx.commit('firewall');
-			}
-			let ip_link = shell('readlink /sbin/ip 2>/dev/null');
-			if (ip_link != pkg.ip_full) {
-				push(status.errors, { code: 'errorRequiredBinaryMissing', info: 'ip-full' });
-				health_fail = true;
-			}
-			if (!nft_check_element('table', 'fw4')) {
-				push(status.errors, { code: 'errorDefaultFw4TableMissing', info: 'fw4' });
-				health_fail = true;
-			}
-			if (is_config_enabled('dns_policy') || is_tor_running()) {
-				if (!nft_check_element('chain', 'dstnat')) {
-					push(status.errors, { code: 'errorDefaultFw4ChainMissing', info: 'dstnat' });
-					health_fail = true;
-				}
-			}
-			let chains = split(pkg.chains_list, ' ');
-			for (let c in chains) {
-				if (!nft_check_element('chain', 'mangle_' + c)) {
-					push(status.errors, { code: 'errorDefaultFw4ChainMissing', info: 'mangle_' + c });
-					health_fail = true;
-				}
-			}
-			let ctx_dhcp = uci_ctx('dhcp');
-			let ctx_net = uci_ctx('network');
-			ctx_net.foreach('network', 'interface', function(s) {
-				let iface = s['.name'];
-				if (!is_lan(iface)) return;
-				let force = ctx_dhcp.get('dhcp', iface, 'force');
-				if (force == '0') {
-					push(status.warnings, { code: 'warningDhcpLanForce', info: iface });
-				}
-				if (!cfg.resolver_set) return;
-				let dhcp_option = ctx_dhcp.get('dhcp', iface, 'dhcp_option');
-				if (type(dhcp_option) != 'array') return;
-				let ipaddr = ctx_net.get('network', iface, 'ipaddr') || '';
-				let ipaddr_base = split(ipaddr, '/')[0];
-				for (let opt in dhcp_option) {
-					let parts = split(opt, ',');
-					if (length(parts) >= 2) {
-						let option = parts[0];
-						let value = parts[1];
-						if (option == '6' && value != ipaddr_base) {
-							push(status.warnings, { code: 'warningIncompatibleDHCPOption6', info: iface + ': ' + value });
-						}
-					}
-				}
-			});
-			if (health_fail) {
-				output.info_failn();
-				return 1;
-			}
-		}
-		resolver('check_support');
 		load_network(param);
 		output.info_okn();
 		break;
-	case 'on_triggers':
-		if (!state.load_package_config_flag) load_package_config(param);
-		break;
-	case 'on_interface_reload':
-	case 'on_reload':
+
 	case 'on_stop':
-	default:
+	case 'on_reload':
+	case 'on_interface_reload':
 		output.info('Loading environment (' + param + ') ');
-		if (!state.load_package_config_flag) load_package_config(param);
-		load_network(param);		resolver('check_support');		output.info_okn();
+		load_package_config(param);
+		detect_platform();
+		load_network(param);
+		output.info_okn();
+		break;
+
+	case 'netifd':
+	case 'service_started':
+		load_package_config(param);
+		break;
+
+	case 'rpcd':
+		load_package_config(param);
+		detect_platform();
+		break;
+
+	case 'status':
+		load_package_config(param);
+		load_network(param);
 		break;
 	}
+
 	state.load_environment_flag = true;
-	return 0;
+	return true;
 }
 
 // ── load_network() ──────────────────────────────────────────────────
@@ -1212,7 +1191,7 @@ function is_wan_up(param) {
 	let ctx = uci_ctx('network');
 	if (!ctx.get('network', cfg.uplink_interface4)) {
 		push(status.errors, { code: 'errorNoUplinkInterface', info: cfg.uplink_interface4 });
-		push(status.errors, { code: 'errorNoUplinkInterfaceHint', info: get_url('#uplink_interface') });
+		push(status.errors, { code: 'errorNoUplinkInterfaceHint', info: pkg.url('#uplink_interface') });
 		return false;
 	}
 	network_flush_cache();
@@ -1278,6 +1257,17 @@ nft_file = function(command, target, ...extra) {
 		mkdir_p(dirname(pkg.nft_temp_file));
 		mkdir_p(dirname(pkg.nft_main_file));
 		nft_lines = [];
+		state._mark_chains_created = {};
+		// Emit nft define statements for fw mark/mask and per-interface chain names
+		push(nft_lines, 'define ' + nft_prefix + '_fw_mark = ' + cfg.fw_mask);
+		push(nft_lines, 'define ' + nft_prefix + '_fw_mask = ' + cfg.fw_maskXor);
+		for (let iname in keys(status.interfaces)) {
+			let idata = status.interfaces[iname];
+			if (idata?.chain_name) {
+				push(nft_lines, 'define ' + nft_prefix + '_' + iname + '_chain = ' + idata.chain_name);
+			}
+		}
+		push(nft_lines, '');
 		// Create pbr chains in fw4 table
 		let chains = split(chains_list, ' ');
 		for (let ch in ['dstnat', ...chains])
@@ -1659,85 +1649,83 @@ function cleanup(...actions) {
 // ── Status Management ────────────────────────────────────────────────
 // All status is kept in-memory in status — no JSON file I/O.
 
-function build_gateway_summary() {
-	let lines = [];
-	for (let name in keys(status.interfaces)) {
-		let iface = status.interfaces[name];
-		if (!iface || iface.action == 'mwan4_strategy') continue;
-		let disp_dev = (name != iface.device_ipv4) ? iface.device_ipv4 : '';
-		let gw4 = iface.gateway_ipv4 || '0.0.0.0';
-		let gw6 = iface.gateway_ipv6 || '::/0';
-		let text = name + '/' + (disp_dev ? disp_dev + '/' : '') + gw4;
-		if (cfg.ipv6_enabled) text += '/' + gw6;
-		if (iface.status_symbol) text += ' ' + iface.status_symbol;
-		push(lines, text);
-	}
-	return join('\\n', lines);
-}
-
 // ── resolver() ──────────────────────────────────────────────────────
 
-function dnsmasq_get_confdir(instance) {
-	let ctx = uci_ctx('dhcp');
-	let dhcp_cfg = ctx.get('dhcp', instance) ? instance : null;
-	if (!dhcp_cfg) {
-		ctx.foreach('dhcp', 'dnsmasq', function(s) {
-			if (s['.name'] == instance || s['.index'] == instance)
-				dhcp_cfg = s['.name'];
-		});
-	}
-	if (!state.dnsmasq_ubus)
-		state.dnsmasq_ubus = ubus_call('service', 'list', { name: 'dnsmasq' });
-	let cfg_file = null;
-	if (state.dnsmasq_ubus?.dnsmasq?.instances?.[dhcp_cfg]?.command) {
-		let cmd_parts = state.dnsmasq_ubus.dnsmasq.instances[dhcp_cfg].command;
-		if (type(cmd_parts) == 'array') {
-			for (let i = 0; i < length(cmd_parts); i++) {
-				if (cmd_parts[i] == '-C' && i + 1 < length(cmd_parts)) {
-					cfg_file = cmd_parts[i + 1];
-					break;
+resolver = function(param, iface, target, type_val, uid, name, value) {
+	let _uci_has_changes = function(config) {
+		return length(uci_ctx(config).changes(config) || []) > 0;
+	};
+
+	let _uci_add_list_if_new = function(config, section, option, value) {
+		if (!config || !section || !option || !value) return false;
+		let ctx = uci_ctx(config);
+		let current = ctx.get(config, section, option);
+		if (type(current) == 'array' && index(current, value) >= 0) return true;
+		if (current == value) return true;
+		ctx.list_append(config, section, option, value);
+		ctx.save(config);
+		return true;
+	};
+
+	let _dnsmasq_get_confdir = function(instance) {
+		let ctx = uci_ctx('dhcp');
+		let dhcp_cfg = ctx.get('dhcp', instance) ? instance : null;
+		if (!dhcp_cfg) {
+			ctx.foreach('dhcp', 'dnsmasq', function(s) {
+				if (s['.name'] == instance || s['.index'] == instance)
+					dhcp_cfg = s['.name'];
+			});
+		}
+		if (!state.dnsmasq_ubus)
+			state.dnsmasq_ubus = ubus_call('service', 'list', { name: 'dnsmasq' });
+		let cfg_file = null;
+		if (state.dnsmasq_ubus?.dnsmasq?.instances?.[dhcp_cfg]?.command) {
+			let cmd_parts = state.dnsmasq_ubus.dnsmasq.instances[dhcp_cfg].command;
+			if (type(cmd_parts) == 'array') {
+				for (let i = 0; i < length(cmd_parts); i++) {
+					if (cmd_parts[i] == '-C' && i + 1 < length(cmd_parts)) {
+						cfg_file = cmd_parts[i + 1];
+						break;
+					}
 				}
 			}
 		}
-	}
-	if (!cfg_file) return null;
-	let content = readfile(cfg_file) || '';
-	let m = match(content, /(^|\n)conf-dir=([^\n]*)/);
-	return m ? m[2] : null;
-}
+		if (!cfg_file) return null;
+		let content = readfile(cfg_file) || '';
+		let m = match(content, /(^|\n)conf-dir=([^\n]*)/);
+		return m ? m[2] : null;
+	};
 
-function dnsmasq_instance_cleanup(instance) {
-	if (!stat('/etc/config/dhcp')?.type) return true;
-	let ctx = uci_ctx('dhcp');
-	if (!ctx.get('dhcp', instance)) return false;
-	let confdir = dnsmasq_get_confdir(instance);
-	if (confdir) unlink(confdir + '/' + pkg.name);
-	let current = ctx.get('dhcp', instance, 'addnmount');
-	if (type(current) == 'array') {
-		let idx = index(current, pkg.dnsmasq_file);
-		if (idx >= 0) {
-			ctx.reorder('dhcp', instance, idx);
-			ctx.delete('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
-			ctx.save('dhcp');
+	let _dnsmasq_instance_cleanup = function(instance) {
+		if (!stat('/etc/config/dhcp')?.type) return true;
+		let ctx = uci_ctx('dhcp');
+		if (!ctx.get('dhcp', instance)) return false;
+		let confdir = _dnsmasq_get_confdir(instance);
+		if (confdir) unlink(confdir + '/' + pkg.name);
+		let current = ctx.get('dhcp', instance, 'addnmount');
+		if (type(current) == 'array') {
+			let idx = index(current, pkg.dnsmasq_file);
+			if (idx >= 0) {
+				ctx.reorder('dhcp', instance, idx);
+				ctx.delete('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
+				ctx.save('dhcp');
+			}
 		}
-	}
-	return true;
-}
+		return true;
+	};
 
-function dnsmasq_instance_setup(instance) {
-	if (!stat('/etc/config/dhcp')?.type) return true;
-	let ctx = uci_ctx('dhcp');
-	if (!ctx.get('dhcp', instance)) return false;
-	uci_add_list_if_new('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
-	let confdir = dnsmasq_get_confdir(instance);
-	if (!confdir) return false;
-	sys('ln -sf ' + shell_quote(pkg.dnsmasq_file) + ' ' + shell_quote(confdir + '/' + pkg.name));
-	sys('chmod 660 ' + shell_quote(confdir + '/' + pkg.name));
-	sys('chown -h root:dnsmasq ' + shell_quote(confdir + '/' + pkg.name));
-	return true;
-}
-
-resolver = function(param, iface, target, type_val, uid, name, value) {
+	let _dnsmasq_instance_setup = function(instance) {
+		if (!stat('/etc/config/dhcp')?.type) return true;
+		let ctx = uci_ctx('dhcp');
+		if (!ctx.get('dhcp', instance)) return false;
+		_uci_add_list_if_new('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
+		let confdir = _dnsmasq_get_confdir(instance);
+		if (!confdir) return false;
+		sys('ln -sf ' + shell_quote(pkg.dnsmasq_file) + ' ' + shell_quote(confdir + '/' + pkg.name));
+		sys('chmod 660 ' + shell_quote(confdir + '/' + pkg.name));
+		sys('chown -h root:dnsmasq ' + shell_quote(confdir + '/' + pkg.name));
+		return true;
+	};
 	switch (cfg.resolver_set) {
 	case '':
 	case 'none':
@@ -1783,19 +1771,13 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 			if (target == 'src') return false;
 			return nftset('create_dnsmasq_set', iface, target, type_val, uid, name, value);
 		case 'check_support':
-			if (check_dnsmasq_nftset()) {
-				state.resolver_set_supported = true;
-				return true;
-			} else {
-				push(status.warnings, { code: 'warningResolverNotSupported' });
-				return false;
-			}
+			return state.resolver_set_supported;
 		case 'cleanup':
 			if (!state.resolver_set_supported) return false;
 			unlink(pkg.dnsmasq_file);
 			let ctx_dhcp = uci_ctx('dhcp', true);
 			ctx_dhcp.foreach('dhcp', 'dnsmasq', function(s) {
-				dnsmasq_instance_cleanup(s['.name']);
+				_dnsmasq_instance_cleanup(s['.name']);
 			});
 			return true;
 		case 'configure':
@@ -1805,16 +1787,16 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 			let ctx2 = uci_ctx('dhcp', true);
 			if (cfg.resolver_instance == '*') {
 				ctx2.foreach('dhcp', 'dnsmasq', function(s) {
-					dnsmasq_instance_setup(s['.name']);
+					_dnsmasq_instance_setup(s['.name']);
 				});
 			} else {
 				ctx2.foreach('dhcp', 'dnsmasq', function(s) {
-					dnsmasq_instance_cleanup(s['.name']);
+					_dnsmasq_instance_cleanup(s['.name']);
 				});
 				let instances = split(trim(cfg.resolver_instance), /\s+/);
 				for (let inst in instances) {
-					if (!dnsmasq_instance_setup('@dnsmasq[' + inst + ']'))
-						dnsmasq_instance_setup(inst);
+					if (!_dnsmasq_instance_setup('@dnsmasq[' + inst + ']'))
+						_dnsmasq_instance_setup(inst);
 				}
 			}
 			return true;
@@ -1844,7 +1826,7 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 			}
 		case 'compare_hash': {
 			if (!state.resolver_set_supported) return false;
-			if (uci_has_changes('dhcp')) {
+			if (_uci_has_changes('dhcp')) {
 				uci_ctx('dhcp').commit('dhcp');
 			}
 			let resolver_new_hash = null;
@@ -2072,8 +2054,9 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 			return 1;
 		}
 	} else if (mark) {
-		dest4 = 'goto ' + nft_prefix + '_mark_' + mark;
-		dest6 = 'goto ' + nft_prefix + '_mark_' + mark;
+		let chain_name = status.get_interface(iface).chain_name;
+		dest4 = 'goto ' + chain_name;
+		dest6 = 'goto ' + chain_name;
 	} else if (iface == 'ignore') {
 		dest4 = 'return';
 		dest6 = 'return';
@@ -2408,21 +2391,26 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 					ipv4_error = 1;
 			}
 
-			if (!nft_file('match', 'temp', nft_prefix + '_mark_' + mark)) {
-				nft_add('add chain inet ' + nft_table + ' ' + nft_prefix + '_mark_' + mark);
-				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + mark + rule_params +
+			let idata = status.get_interface(iface);
+			let chain_name = idata.chain_name;
+
+			if (!state._mark_chains_created?.[mark]) {
+				if (!state._mark_chains_created) state._mark_chains_created = {};
+				state._mark_chains_created[mark] = true;
+				nft_add('add chain inet ' + nft_table + ' ' + chain_name);
+				nft_add('add rule inet ' + nft_table + ' ' + chain_name + rule_params +
 					' meta mark set (meta mark & ' + cfg.fw_maskXor + ') | ' + mark);
-				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + mark + ' return');
+				nft_add('add rule inet ' + nft_table + ' ' + chain_name + ' return');
 			}
 
 			let dscp = uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
 			if (+dscp >= 1 && +dscp <= 63) {
 				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-					pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+					pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + chain_name);
 			}
 			if (iface == cfg.icmp_interface) {
 				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-					pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+					pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + chain_name);
 			}
 		}
 
@@ -2456,21 +2444,26 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 					ipv6_error = 1;
 			}
 
-			if (!nft_file('match', 'temp', nft_prefix + '_mark_' + mark)) {
-				nft_add('add chain inet ' + nft_table + ' ' + nft_prefix + '_mark_' + mark);
-				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + mark + rule_params +
+			let idata6 = status.get_interface(iface);
+			let chain_name6 = idata6.chain_name;
+
+			if (!state._mark_chains_created?.[mark]) {
+				if (!state._mark_chains_created) state._mark_chains_created = {};
+				state._mark_chains_created[mark] = true;
+				nft_add('add chain inet ' + nft_table + ' ' + chain_name6);
+				nft_add('add rule inet ' + nft_table + ' ' + chain_name6 + rule_params +
 					' meta mark set (meta mark & ' + cfg.fw_maskXor + ') | ' + mark);
-				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + mark + ' return');
+				nft_add('add rule inet ' + nft_table + ' ' + chain_name6 + ' return');
 			}
 
 			let dscp = uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
 			if (+dscp >= 1 && +dscp <= 63) {
 				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-					pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+					pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + chain_name6);
 			}
 			if (iface == cfg.icmp_interface) {
 				nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-					pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+					pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + chain_name6);
 			}
 		}
 
@@ -2610,12 +2603,14 @@ function enumerate_interfaces() {
 
 		status.set_interface(iface, {
 			mark: _mark, priority: _priority,
+			chain_name: pkg.nft_prefix + '_mark_' + _mark,
 			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 			gateway_ipv4: '', gateway_ipv6: '',
 			is_default: false,
 		});
 
-		state.ifaces_triggers += (state.ifaces_triggers ? ' ' : '') + iface;
+		if (!is_netifd_interface(iface) && !is_mwan4_interface(iface))
+			state.ifaces_triggers += (state.ifaces_triggers ? ' ' : '') + iface;
 
 		if (!split_uplink_second) {
 			iface_mark = sprintf('0x%06x', hex(iface_mark) + hex(cfg.uplink_mark));
@@ -2647,6 +2642,20 @@ function resolve_tid(iface) {
 // enumerate_interfaces(). TIDs are resolved lazily per action.
 
 function process_interface(iface, action, reloaded_iface) {
+	let _get_tor_dns_port = function() {
+		let content = readfile(pkg.tor_config_file);
+		if (type(content) != 'string' || !content) return '9053';
+		let m = match(content, /DNSPort\s+\S+:(\d+)/);
+		return m ? m[1] : '9053';
+	};
+
+	let _get_tor_traffic_port = function() {
+		let content = readfile(pkg.tor_config_file);
+		if (type(content) != 'string' || !content) return '9040';
+		let m = match(content, /TransPort\s+\S+:(\d+)/);
+		return m ? m[1] : '9040';
+	};
+
 	let s = 0;
 	let nft_prefix = pkg.nft_prefix;
 
@@ -2691,8 +2700,8 @@ function process_interface(iface, action, reloaded_iface) {
 	if (iface == 'tor') {
 		switch (action) {
 		case 'create': case 'reload': case 'reload_interface':
-			state.tor_dns_port = get_tor_dns_port();
-			state.tor_traffic_port = get_tor_traffic_port();
+			state.tor_dns_port = _get_tor_dns_port();
+			state.tor_traffic_port = _get_tor_traffic_port();
 			status.set_interface('tor', {
 				device_ipv4: '', device_ipv6: '',
 				gateway_ipv4: '53->' + state.tor_dns_port,
@@ -2745,6 +2754,7 @@ function process_interface(iface, action, reloaded_iface) {
 		if (interface_routing('create', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 			status.set_interface(iface, {
 				tid: _tid, mark: _mark, priority: _priority,
+				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 				gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
 				is_default: disp_status ? true : false,
@@ -2800,6 +2810,7 @@ function process_interface(iface, action, reloaded_iface) {
 			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
 		status.set_interface(iface, {
 			tid: _tid, mark: _mark, priority: _priority,
+			chain_name: existing.chain_name,
 			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 			gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
 			is_default: disp_status ? true : false,
@@ -2828,6 +2839,7 @@ function process_interface(iface, action, reloaded_iface) {
 			if (interface_routing('reload_interface', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 				status.set_interface(iface, {
 					tid: _tid, mark: _mark, priority: _priority,
+					chain_name: existing.chain_name,
 					device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 					gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
 					is_default: disp_status ? true : false,
@@ -2842,6 +2854,7 @@ function process_interface(iface, action, reloaded_iface) {
 		} else {
 			status.set_interface(iface, {
 				tid: _tid, mark: _mark, priority: _priority,
+				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 				gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
 				is_default: disp_status ? true : false,
@@ -2857,96 +2870,107 @@ function process_interface(iface, action, reloaded_iface) {
 
 // ── User File Process ───────────────────────────────────────────────
 
-function user_file_process_sh(path) {
-	if (sys('/bin/sh -n ' + shell_quote(path)) != 0) {
-		push(status.errors, { code: 'errorUserFileSyntax', info: path });
-		output.info_fail();
-		return 1;
-	}
-	if (is_bad_user_file_nft_call(path)) {
-		push(status.errors, { code: 'errorIncompatibleUserFile', info: path });
-		output.info_fail();
-		return 1;
-	}
-	output.verbose('Running ' + path + ' ');
-	// Create wrapper that captures nft commands into the accumulator
-	let nft_capture = '/var/run/pbr.nft.user';
-	let wrapper_path = '/var/run/pbr.user_wrapper.sh';
-	unlink(nft_capture);
-	writefile(wrapper_path,
-		'nft() { printf "%s\\n" "$*" >> ' + shell_quote(nft_capture) + '; }\n' +
-		'. ' + shell_quote(path) + '\n');
-	let rc = sys('. ' + shell_quote(wrapper_path));
-	// Read captured nft commands and add to accumulator
-	let captured = readfile(nft_capture) || '';
-	for (let line in split(captured, '\n')) {
-		if (line) push(nft_lines, line);
-	}
-	unlink(nft_capture);
-	unlink(wrapper_path);
-	if (rc != 0) {
-		push(status.errors, { code: 'errorUserFileRunning', info: path });
-		let content = readfile(path) || '';
-		if (index(content, 'curl') >= 0 && !is_present('curl'))
-			push(status.errors, { code: 'errorUserFileNoCurl', info: path });
-		output.verbose_fail();
-		return 1;
-	}
-	output.verbose_ok();
-	return 0;
-}
-
-function user_file_process_uc(path) {
-	output.verbose('Running ' + path + ' ');
-	// Provide an API object for ucode user scripts
-	let api = {
-		nft_add: function(rule_line) {
-			if (rule_line) push(nft_lines, rule_line);
-		},
-		get_interface_mark: function(iface) {
-			return status.get_mark(iface);
-		},
-		get_interface_data: function(iface) {
-			return status.get_interface(iface);
-		},
-		nft_prefix: pkg.nft_prefix,
-		nft_table: pkg.nft_table,
-		cfg: cfg,
-	};
-	let code = readfile(path);
-	if (!code) {
-		push(status.errors, { code: 'errorUserFileRunning', info: path });
-		output.verbose_fail();
-		return 1;
-	}
-	let fn = loadstring('' + code);
-	if (!fn) {
-		push(status.errors, { code: 'errorUserFileSyntax', info: path });
-		output.verbose_fail();
-		return 1;
-	}
-	let result;
-	try { result = fn(); } catch (e) {
-		push(status.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
-		output.verbose_fail();
-		return 1;
-	}
-	// Convention: the script returns a function or an object with run()
-	try {
-		if (type(result) == 'function')
-			result(api);
-		else if (type(result) == 'object' && type(result?.run) == 'function')
-			result.run(api);
-	} catch (e) {
-		push(status.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
-		output.verbose_fail();
-		return 1;
-	}
-	output.verbose_ok();
-	return 0;
-}
-
 function user_file_process(enabled, path) {
+	let _is_bad_user_file_nft_call = function(filepath) {
+		let content = readfile(filepath) || '';
+		return index(content, '"$nft" list') >= 0 || index(content, '"$nft" -f') >= 0;
+	};
+
+	let _user_file_process_sh = function(path) {
+		if (sys('/bin/sh -n ' + shell_quote(path)) != 0) {
+			push(status.errors, { code: 'errorUserFileSyntax', info: path });
+			output.info_fail();
+			return 1;
+		}
+		if (_is_bad_user_file_nft_call(path)) {
+			push(status.errors, { code: 'errorIncompatibleUserFile', info: path });
+			output.info_fail();
+			return 1;
+		}
+		output.verbose('Running ' + path + ' ');
+		// Create wrapper that captures nft commands into the accumulator
+		let nft_capture = '/var/run/pbr.nft.user';
+		let wrapper_path = '/var/run/pbr.user_wrapper.sh';
+		unlink(nft_capture);
+		writefile(wrapper_path,
+			'nft() { printf "%s\\n" "$*" >> ' + shell_quote(nft_capture) + '; }\n' +
+			'. ' + shell_quote(path) + '\n');
+		let rc = sys('. ' + shell_quote(wrapper_path));
+		// Read captured nft commands and add to accumulator
+		let captured = readfile(nft_capture) || '';
+		for (let line in split(captured, '\n')) {
+			if (line) push(nft_lines, line);
+		}
+		unlink(nft_capture);
+		unlink(wrapper_path);
+		if (rc != 0) {
+			push(status.errors, { code: 'errorUserFileRunning', info: path });
+			let content = readfile(path) || '';
+			if (index(content, 'curl') >= 0 && !is_present('curl'))
+				push(status.errors, { code: 'errorUserFileNoCurl', info: path });
+			output.verbose_fail();
+			return 1;
+		}
+		output.verbose_ok();
+		return 0;
+	};
+
+	let _user_file_process_uc = function(path) {
+		output.verbose('Running ' + path + ' ');
+		// Provide an API object for ucode user scripts
+		let api = {
+			nft_add: function(rule_line) {
+				if (rule_line) push(nft_lines, rule_line);
+			},
+			get_interface_mark: function(iface) {
+				return status.get_mark(iface);
+			},
+			get_interface_chain_var: function(iface) {
+				return status.get_interface(iface)?.chain_name;
+			},
+			get_interface_mark_var: function(iface) {
+				return status.get_interface(iface)?.mark;
+			},
+			get_interface_data: function(iface) {
+				return status.get_interface(iface);
+			},
+			nft_prefix: pkg.nft_prefix,
+			nft_table: pkg.nft_table,
+			cfg: cfg,
+		};
+		let code = readfile(path);
+		if (!code) {
+			push(status.errors, { code: 'errorUserFileRunning', info: path });
+			output.verbose_fail();
+			return 1;
+		}
+		let fn = loadstring('' + code);
+		if (!fn) {
+			push(status.errors, { code: 'errorUserFileSyntax', info: path });
+			output.verbose_fail();
+			return 1;
+		}
+		let result;
+		try { result = fn(); } catch (e) {
+			push(status.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
+			output.verbose_fail();
+			return 1;
+		}
+		// Convention: the script returns a function or an object with run()
+		try {
+			if (type(result) == 'function')
+				result(api);
+			else if (type(result) == 'object' && type(result?.run) == 'function')
+				result.run(api);
+		} catch (e) {
+			push(status.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
+			output.verbose_fail();
+			return 1;
+		}
+		output.verbose_ok();
+		return 0;
+	};
+
 	if (enabled != '1' && enabled != 1) return 0;
 	if (!stat(path) || stat(path).size == 0) {
 		push(status.errors, { code: 'errorUserFileNotFound', info: path });
@@ -2954,15 +2978,15 @@ function user_file_process(enabled, path) {
 		return 1;
 	}
 	if (match(path, /\.uc$/))
-		return user_file_process_uc(path);
+		return _user_file_process_uc(path);
 	else
-		return user_file_process_sh(path);
+		return _user_file_process_sh(path);
 }
 
 // ── Netifd Integration ──────────────────────────────────────────────
 
 function netifd(action, target_iface) {
-	load_package_config();
+	load_environment('netifd');
 	status.reset();
 	action = action || 'install';
 
@@ -3185,25 +3209,23 @@ function netifd(action, target_iface) {
 
 // ── start ───────────────────────────────────────────────────────────
 
-function start(args) {
+function start_service(args) {
 	let param = (args && args[0]) || 'on_start';
 	let reloaded_iface = (args && args[1]) || null;
 
-	load_package_config(param);
-	if (param == 'on_boot') {
-		state.pbr_boot_flag = true;
-		return null;
-	}
+	// on_boot is handled entirely in shell; nothing to do here
+	if (param == 'on_boot') return null;
 
 	status.reset();
-	if (load_environment(param) != 0) return null;
-
-	output.print('Processing environment (' + param + ') ');
+	if (!load_environment(param)) {
+		return null;
+	}
+	output.print('Detecting uplink (' + param + ') ');
 	if (!is_wan_up(param)) {
 		output.failn();
 		output.warning(get_text('warningUplinkDown'));
 //	if uplink is still down, fall back to on-boot strategy
-		state.pbr_boot_flag = true;
+		writefile(pkg.boot_flag_file, '1');
 		return null;
 	}
 
@@ -3212,10 +3234,6 @@ function start(args) {
 	// Determine trigger
 	let service_start_trigger;
 	switch (param) {
-	case 'on_boot':
-	case 'on_firewall_reload':
-		service_start_trigger = 'on_start';
-		break;
 	case 'on_interface_reload':
 		if (reloaded_iface)
 			service_start_trigger = 'on_interface_reload';
@@ -3334,7 +3352,22 @@ function start(args) {
 		break;
 	}
 
-	let gw_summary = build_gateway_summary();
+	let _build_gateway_summary = function() {
+		let lines = [];
+		for (let name in keys(status.interfaces)) {
+			let iface = status.interfaces[name];
+			if (!iface || iface.action == 'mwan4_strategy') continue;
+			let disp_dev = (name != iface.device_ipv4) ? iface.device_ipv4 : '';
+			let gw4 = iface.gateway_ipv4 || '0.0.0.0';
+			let gw6 = iface.gateway_ipv6 || '::/0';
+			let text = name + '/' + (disp_dev ? disp_dev + '/' : '') + gw4;
+			if (cfg.ipv6_enabled) text += '/' + gw6;
+			if (iface.status_symbol) text += ' ' + iface.status_symbol;
+			push(lines, text);
+		}
+		return join('\\n', lines);
+	};
+	let gw_summary = _build_gateway_summary();
 	let gateways = [];
 	for (let name in keys(status.interfaces)) {
 		let iface = status.interfaces[name];
@@ -3358,15 +3391,16 @@ function start(args) {
 		status: {},
 		errors: status.errors,
 		warnings: status.warnings,
+		ifacesTriggers: state.ifaces_triggers,
 	};
 	if (gw_summary)
 		result.status.gateways = gw_summary;
 	return result;
 }
 
-// ── stop ────────────────────────────────────────────────────────────
+// ── stop_service ────────────────────────────────────────────────────
 
-function stop() {
+function stop_service() {
 	status.reset();
 	if (!is_service_running_nft() && get_rt_tables_next_id() == get_rt_tables_non_pbr_next_id())
 		return;
@@ -3394,12 +3428,12 @@ function stop() {
 	}
 }
 
-// ── service_started_actions ─────────────────────────────────────────
+// ── service_started ─────────────────────────────────────────────────
 
-function service_started_actions(param) {
+function service_started(param) {
 	if (param == 'on_boot') return;
 
-	load_package_config();
+	load_environment('service_started');
 
 	// Fetch errors/warnings/gateways from ubus (stored by start_service via procd)
 	let svc_info = ubus_call('service', 'list', { name: pkg.name });
@@ -3421,30 +3455,16 @@ function service_started_actions(param) {
 		output.warning(get_text(w.code, w.info));
 	}
 	if (length(warnings) > 0)
-		output.warning(get_text('warningSummary', get_url('#WarningMessagesDetails')));
+		output.warning(get_text('warningSummary', pkg.url('#WarningMessagesDetails')));
 
 	let errors = svc_data?.errors || [];
 	for (let e in errors) {
 		output.error(get_text(e.code, e.info));
 	}
 	if (length(errors) > 0)
-		output.error(get_text('errorSummary', get_url('#ErrorMessagesDetails')));
+		output.error(get_text('errorSummary', pkg.url('#ErrorMessagesDetails')));
 
 	writefile(pkg.lock_file, trim(shell('echo $$')));
-}
-
-// ── get_network_trigger_info ────────────────────────────────────────
-
-function get_network_trigger_info() {
-	load_package_config();
-	enumerate_interfaces();
-
-	return {
-		pbrBootFlag: state.pbr_boot_flag,
-		procd_boot_trigger_delay: cfg.procd_boot_trigger_delay || '5000',
-		procd_reload_delay: cfg.procd_reload_delay || '0',
-		ifacesTriggers: state.ifaces_triggers,
-	};
 }
 
 // ── emit_procd_shell ────────────────────────────────────────────────
@@ -3498,14 +3518,17 @@ function emit_procd_shell(data) {
 	}
 	push(lines, 'json_close_array');
 
+	// Shell variables for service_triggers() (not part of procd data)
+	if (data.ifacesTriggers)
+		push(lines, '_pbr_ifaces_triggers=' + shell_quote(data.ifacesTriggers));
+
 	return join('\n', lines) + '\n';
 }
 
 // ── Status Service ──────────────────────────────────────────────────
 
 function status_service(param) {
-	load_package_config('status');
-	load_network('status');
+	load_environment('status');
 
 	let board = ubus_call('system', 'board', {});
 	let openwrt_release = board?.release?.description || 'unknown';
@@ -3648,6 +3671,7 @@ function support() {
 
 function get_init_list(name) {
 	name = name || pkg.name;
+	load_environment('rpcd');
 	let result = {};
 	let enabled = uci_ctx(pkg.name).get(pkg.name, 'config', 'enabled') || '0';
 	result[name] = { enabled: (enabled == '1') };
@@ -3656,7 +3680,7 @@ function get_init_list(name) {
 
 function get_init_status(name) {
 	name = name || pkg.name;
-	load_package_config('status');
+	load_environment('status');
 
 	let ubus_data = ubus_call('service', 'list', { name: pkg.name });
 	let svc_data = ubus_data?.[pkg.name]?.instances?.main?.data;
@@ -3681,23 +3705,24 @@ function get_init_status(name) {
 
 function get_platform_support(name) {
 	name = name || pkg.name;
+	load_environment('rpcd');
 	let result = {};
 	result[name] = {
 		ipset_installed: false,
-		nft_installed: check_nft(),
-		adguardhome_installed: check_agh(),
-		dnsmasq_installed: check_dnsmasq(),
-		unbound_installed: check_unbound(),
+		nft_installed: state.nft_installed,
+		adguardhome_installed: state.adguardhome_installed,
+		dnsmasq_installed: state.dnsmasq_installed,
+		unbound_installed: state.unbound_installed,
 		adguardhome_ipset_support: false,
 		dnsmasq_ipset_support: false,
-		dnsmasq_nftset_support: check_dnsmasq_nftset(),
+		dnsmasq_nftset_support: state.dnsmasq_nftset_supported,
 	};
 	return result;
 }
 
 function get_supported_interfaces(name) {
 	name = name || pkg.name;
-	load_package_config('rpcd');
+	load_environment('rpcd');
 
 	let ifaces = '';
 	// From firewall WAN zone
@@ -3750,8 +3775,8 @@ export default {
 	pkg,
 
 	// Core lifecycle
-	start,
-	stop,
+	start_service,
+	stop_service,
 	status_service,
 
 	// Netifd
@@ -3767,7 +3792,6 @@ export default {
 	get_supported_interfaces,
 
 	// init script helpers
-	get_network_trigger_info,
-	service_started_actions,
+	service_started,
 	emit_procd_shell,
 };
