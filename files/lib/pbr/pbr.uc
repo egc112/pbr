@@ -1379,6 +1379,7 @@ nft_file = function(command, target, ...extra) {
 		if (nft_call('-c', '-f', pkg.nft_temp_file) &&
 			sys('cp -f ' + shell_quote(pkg.nft_temp_file) + ' ' + shell_quote(pkg.nft_main_file)) == 0) {
 			output.okn();
+			sys('fw4 -q reload');
 			return true;
 		} else {
 			push(status.errors, { code: 'errorNftMainFileInstall', info: pkg.nft_temp_file });
@@ -3541,7 +3542,6 @@ function service_started(param) {
 	let svc_data = svc_info?.[pkg.name]?.instances?.main?.data;
 
 	if (nft_file('exists', 'main')) {
-		sys('fw4 -q reload');
 		if (resolver('compare_hash')) resolver('restart');
 		let gw_summary = svc_data?.status?.gateways;
 		if (gw_summary)
