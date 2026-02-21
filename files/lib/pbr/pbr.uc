@@ -13,7 +13,7 @@ import { connect } from 'ubus';
 // by earlier functions.  ucode does not hoist function declarations, so
 // without these `let` bindings the early callers would crash with
 // "access to undeclared variable".
-let is_ignored_interface, load_network, nft_check_element, nft_file, resolver;
+let is_ignored_interface, nft_check_element, nft_file, resolver;
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -625,7 +625,7 @@ function get_external_mark_chains() {
 }
 
 function is_service_running_nft() {
-	if (!state.nft_installed) return false;
+	if (!env.nft_installed) return false;
 	let chains = get_mark_nft_chains();
 	return chains != null && chains != '';
 }
@@ -641,10 +641,10 @@ function get_nft_sets() {
 	return join(' ', results);
 }
 
-function is_running_nft_file() {
+env.is_running_nft_file = function() {
 	let s = stat(pkg.nft_main_file);
 	return s != null && s.type == 'file' && s.size > 0;
-}
+};
 
 function resolveip_to_nftset(...args) {
 	resolver('wait');
@@ -675,34 +675,34 @@ function ipv4_leases_to_nftset(arg) {
 	return join(',', results);
 }
 
-function detect_platform() {
-	if (state.detect_platform_done) return;
-	state.nft_installed = is_present('nft');
-	state.dnsmasq_installed = is_present('dnsmasq');
-	state.unbound_installed = is_present('unbound');
+env.detect = function() {
+	if (env._detected) return;
+	env.nft_installed = is_present('nft');
+	env.dnsmasq_installed = is_present('dnsmasq');
+	env.unbound_installed = is_present('unbound');
 	let agh = shell('command -v AdGuardHome');
 	if (agh && is_present(agh)) {
-		let content = readfile(state.agh_config_file);
+		let content = readfile(env.agh_config_file);
 		if (content && content != '') {
-			state.adguardhome_installed = true;
+			env.adguardhome_installed = true;
 		} else {
 			let alt = dirname(agh) + '/AdGuardHome.yaml';
 			content = readfile(alt);
-			state.adguardhome_installed = !!(content && content != '');
+			env.adguardhome_installed = !!(content && content != '');
 		}
 	}
-	if (state.dnsmasq_installed) {
-		if (!state.dnsmasq_features)
-			state.dnsmasq_features = shell("dnsmasq --version 2>/dev/null | grep -m1 'Compile time options:' | cut -d: -f2") + ' ';
-		state.dnsmasq_nftset_supported = index(state.dnsmasq_features, ' nftset ') >= 0;
+	if (env.dnsmasq_installed) {
+		if (!env.dnsmasq_features)
+			env.dnsmasq_features = shell("dnsmasq --version 2>/dev/null | grep -m1 'Compile time options:' | cut -d: -f2") + ' ';
+		env.dnsmasq_nftset_supported = index(env.dnsmasq_features, ' nftset ') >= 0;
 	}
 	if (cfg.resolver_set == 'dnsmasq.nftset') {
-		state.resolver_set_supported = !!state.dnsmasq_nftset_supported;
+		env.resolver_set_supported = !!env.dnsmasq_nftset_supported;
 	} else {
-		state.resolver_set_supported = !cfg.resolver_set || cfg.resolver_set == 'none' || false;
+		env.resolver_set_supported = !cfg.resolver_set || cfg.resolver_set == 'none' || false;
 	}
-	state.detect_platform_done = true;
-}
+	env._detected = true;
+};
 
 function ipv6_leases_to_nftset(arg) {
 	let content = readfile('/tmp/hosts/odhcpd') || '';
@@ -813,9 +813,8 @@ function get_text(code, ...args) {
 
 // ── Download helpers ─────────────────────────────────────────────────
 
-let _dl_cache;
-function get_downloader() {
-	if (_dl_cache) return _dl_cache;
+env.get_downloader = function() {
+	if (env._dl_cache) return env._dl_cache;
 	let command, flag, https_supported;
 	if (is_present('curl')) {
 		command = 'curl --silent --insecure';
@@ -834,9 +833,9 @@ function get_downloader() {
 		shell('wget --version 2>/dev/null | grep -q "+ssl" && echo yes') == 'yes') {
 		https_supported = true;
 	}
-	_dl_cache = { command, flag, https_supported };
-	return _dl_cache;
-}
+	env._dl_cache = { command, flag, https_supported };
+	return env._dl_cache;
+};
 
 // ── process_url() ───────────────────────────────────────────────────
 
@@ -857,7 +856,7 @@ function process_url(url) {
 		return join(' ', results);
 	};
 
-	let dl = get_downloader();
+	let dl = env.get_downloader();
 
 	let dl_temp_file = shell('mktemp -q -t ' + shell_quote(pkg.name + '_tmp.XXXXXXXX'));
 	if (!dl_temp_file || !stat(dl_temp_file)) {
@@ -1023,12 +1022,12 @@ function load_package_config(param) {
 	if (is_present('AdGuardHome')) {
 		let agh_path = shell('command -v AdGuardHome');
 		if (agh_path) {
-			let content = readfile(state.agh_config_file);
+			let content = readfile(env.agh_config_file);
 			if (!content || content == '') {
 				let alt = dirname(agh_path) + '/AdGuardHome.yaml';
 				content = readfile(alt);
 				if (content && content != '')
-					state.agh_config_file = alt;
+					env.agh_config_file = alt;
 			}
 		}
 	}
@@ -1044,7 +1043,7 @@ function load_environment(param) {
 
 	let _check_system_health = function() {
 		let health_fail = false;
-		if (!state.nft_installed) {
+		if (!env.nft_installed) {
 			push(status.errors, { code: 'errorNoNft' });
 			health_fail = true;
 		}
@@ -1076,7 +1075,7 @@ function load_environment(param) {
 				health_fail = true;
 			}
 		}
-		if (cfg.resolver_set == 'dnsmasq.nftset' && !state.resolver_set_supported) {
+		if (cfg.resolver_set == 'dnsmasq.nftset' && !env.resolver_set_supported) {
 			push(status.warnings, { code: 'warningResolverNotSupported' });
 		}
 		let ctx_dhcp = uci_ctx('dhcp');
@@ -1119,12 +1118,12 @@ function load_environment(param) {
 			output.print("uci set " + pkg.name + ".config.enabled='1'; uci commit " + pkg.name + ";\\n");
 			return false;
 		}
-		detect_platform();
+		env.detect();
 		if (!_check_system_health()) {
 			output.info_failn();
 			return false;
 		}
-		load_network(param);
+		env.load_network(param);
 		output.info_okn();
 		break;
 
@@ -1133,8 +1132,8 @@ function load_environment(param) {
 	case 'on_interface_reload':
 		output.info('Loading environment (' + param + ') ');
 		load_package_config(param);
-		detect_platform();
-		load_network(param);
+		env.detect();
+		env.load_network(param);
 		output.info_okn();
 		break;
 
@@ -1145,12 +1144,12 @@ function load_environment(param) {
 
 	case 'rpcd':
 		load_package_config(param);
-		detect_platform();
+		env.detect();
 		break;
 
 	case 'status':
 		load_package_config(param);
-		load_network(param);
+		env.load_network(param);
 		break;
 	}
 
@@ -1158,59 +1157,59 @@ function load_environment(param) {
 	return true;
 }
 
-// ── load_network() ──────────────────────────────────────────────────
+// ── env.load_network() ──────────────────────────────────────────────
 
-load_network = function(param) {
-	if (!state.ifaces_supported || state.ifaces_supported == '') {
+env.load_network = function(param) {
+	if (!env.ifaces_supported || env.ifaces_supported == '') {
 		// Find firewall WAN zone
 		let ctx_fw = uci_ctx('firewall', true);
 		ctx_fw.foreach('firewall', 'zone', function(s) {
-			if (s.name == 'wan') state.firewall_wan_zone = s['.name'];
+			if (s.name == 'wan') env.firewall_wan_zone = s['.name'];
 		});
 		// Get network list from WAN zone
-		let wan_networks = ctx_fw.get('firewall', state.firewall_wan_zone, 'network');
+		let wan_networks = ctx_fw.get('firewall', env.firewall_wan_zone, 'network');
 		if (type(wan_networks) == 'array') {
 			for (let n in wan_networks) {
-				if (is_supported_interface(n) && !str_contains(state.ifaces_supported, n))
-					state.ifaces_supported += n + ' ';
+				if (is_supported_interface(n) && !str_contains(env.ifaces_supported, n))
+					env.ifaces_supported += n + ' ';
 			}
-		} else if (wan_networks && is_supported_interface(wan_networks) && !str_contains(state.ifaces_supported, wan_networks)) {
-			state.ifaces_supported += wan_networks + ' ';
+		} else if (wan_networks && is_supported_interface(wan_networks) && !str_contains(env.ifaces_supported, wan_networks)) {
+			env.ifaces_supported += wan_networks + ' ';
 		}
 		// Build from network interfaces
 		let ctx_net = uci_ctx('network', true);
 		ctx_net.foreach('network', 'interface', function(s) {
 			let iface = s['.name'];
-			if (is_supported_interface(iface) && !str_contains(state.ifaces_supported, iface))
-				state.ifaces_supported += iface + ' ';
+			if (is_supported_interface(iface) && !str_contains(env.ifaces_supported, iface))
+				env.ifaces_supported += iface + ' ';
 		});
 	}
 
 	let dev4 = network_get_device(cfg.uplink_interface4);
 	if (!dev4) dev4 = network_get_physdev(cfg.uplink_interface4);
-	if (!state.uplink_gw4)
-		state.uplink_gw4 = pbr_get_gateway4(cfg.uplink_interface4, dev4);
+	if (!env.uplink_gw4)
+		env.uplink_gw4 = pbr_get_gateway4(cfg.uplink_interface4, dev4);
 
 	if (cfg.ipv6_enabled) {
 		let dev6 = network_get_device(cfg.uplink_interface6);
 		if (!dev6) dev6 = network_get_physdev(cfg.uplink_interface6);
-		if (!state.uplink_gw6)
-			state.uplink_gw6 = pbr_get_gateway6(cfg.uplink_interface6, dev6);
+		if (!env.uplink_gw6)
+			env.uplink_gw6 = pbr_get_gateway6(cfg.uplink_interface6, dev6);
 	}
 
-	if (!state.load_network_output_done && (param == 'on_boot' || param == 'on_start')) {
-		state.load_network_output_done = true;
+	if (!env._network_output_done && (param == 'on_boot' || param == 'on_start')) {
+		env._network_output_done = true;
 		if (cfg.uplink_interface4)
 			output.verbose('Using uplink' + (cfg.uplink_interface6 ? ' IPv4' : '') + ' interface (' + param + '): ' + cfg.uplink_interface4 + ' ' + sym.ok[1] + '\\n');
-		if (state.uplink_gw4)
-			output.verbose('Found uplink' + (cfg.uplink_interface6 ? ' IPv4' : '') + ' gateway (' + param + '): ' + state.uplink_gw4 + ' ' + sym.ok[1] + '\\n');
+		if (env.uplink_gw4)
+			output.verbose('Found uplink' + (cfg.uplink_interface6 ? ' IPv4' : '') + ' gateway (' + param + '): ' + env.uplink_gw4 + ' ' + sym.ok[1] + '\\n');
 		if (cfg.uplink_interface6)
 			output.verbose('Using uplink IPv6 interface (' + param + '): ' + cfg.uplink_interface6 + ' ' + sym.ok[1] + '\\n');
-		if (state.uplink_gw6)
-			output.verbose('Found uplink IPv6 gateway (' + param + '): ' + state.uplink_gw6 + ' ' + sym.ok[1] + '\\n');
+		if (env.uplink_gw6)
+			output.verbose('Found uplink IPv6 gateway (' + param + '): ' + env.uplink_gw6 + ' ' + sym.ok[1] + '\\n');
 	}
 
-	state.uplink_gw = state.uplink_gw4 || state.uplink_gw6;
+	env.uplink_gw = env.uplink_gw4 || env.uplink_gw6;
 };
 
 // ── is_wan_up() ─────────────────────────────────────────────────────
@@ -1223,8 +1222,8 @@ function is_wan_up(param) {
 		return false;
 	}
 	network_flush_cache();
-	load_network(param);
-	if (state.uplink_gw) {
+	env.load_network(param);
+	if (env.uplink_gw) {
 		return true;
 	} else {
 		push(status.errors, { code: 'errorNoUplinkGateway' });
@@ -1787,7 +1786,7 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 	case 'dnsmasq.nftset':
 		switch (param) {
 		case 'add_resolver_element':
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			if (target == 'src') return false;
 			let words = split(trim('' + (value || '')), /\s+/);
 			for (let d in words) {
@@ -1795,13 +1794,13 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 			}
 			return true;
 		case 'create_resolver_set':
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			if (target == 'src') return false;
 			return nftset('create_dnsmasq_set', iface, target, type_val, uid, name, value);
 		case 'check_support':
-			return state.resolver_set_supported;
+			return env.resolver_set_supported;
 		case 'cleanup':
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			unlink(pkg.dnsmasq_file);
 			let ctx_dhcp = uci_ctx('dhcp', true);
 			ctx_dhcp.foreach('dhcp', 'dnsmasq', function(s) {
@@ -1809,7 +1808,7 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 			});
 			return true;
 		case 'configure':
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			unlink(pkg.dnsmasq_file);
 			writefile(pkg.dnsmasq_file, '');
 			let ctx2 = uci_ctx('dhcp', true);
@@ -1829,11 +1828,11 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 			}
 			return true;
 		case 'kill':
-			if (state.resolver_set_supported)
+			if (env.resolver_set_supported)
 				sys('killall -q -s HUP dnsmasq');
 			return true;
 		case 'reload':
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			output.debug('Reloading dnsmasq ');
 			if (sys('/etc/init.d/dnsmasq reload') == 0) {
 				output.debug_okn();
@@ -1843,7 +1842,7 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 				return false;
 			}
 		case 'restart':
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			output.debug('Restarting dnsmasq ');
 			if (sys('/etc/init.d/dnsmasq restart') == 0) {
 				output.debug_okn();
@@ -1853,7 +1852,7 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 				return false;
 			}
 		case 'compare_hash': {
-			if (!state.resolver_set_supported) return false;
+			if (!env.resolver_set_supported) return false;
 			if (_uci_has_changes('dhcp')) {
 				uci_ctx('dhcp').commit('dhcp');
 			}
@@ -2167,11 +2166,11 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 			let p6_base = nft_insert + ' rule inet ' + nft_table + ' ' + nft_prefix + '_' + chain +
 				rule_params + ' meta nfproto ipv6 ' + param6;
 			let tor_rules = [
-				'udp dport 53 redirect to :' + state.tor_dns_port + ' comment "Tor-DNS-UDP"',
-				'tcp dport 80 redirect to :' + state.tor_traffic_port + ' comment "Tor-HTTP-TCP"',
-				'udp dport 80 redirect to :' + state.tor_traffic_port + ' comment "Tor-HTTP-UDP"',
-				'tcp dport 443 redirect to :' + state.tor_traffic_port + ' comment "Tor-HTTPS-TCP"',
-				'udp dport 443 redirect to :' + state.tor_traffic_port + ' comment "Tor-HTTPS-UDP"',
+				'udp dport 53 redirect to :' + env.tor_dns_port + ' comment "Tor-DNS-UDP"',
+				'tcp dport 80 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTP-TCP"',
+				'udp dport 80 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTP-UDP"',
+				'tcp dport 443 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-TCP"',
+				'udp dport 443 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-UDP"',
 			];
 			for (let dest_rule in tor_rules) {
 				if (!nft4(p4_base + ' ' + dest_rule)) ipv4_error = true;
@@ -2728,12 +2727,12 @@ function process_interface(iface, action, reloaded_iface) {
 	if (iface == 'tor') {
 		switch (action) {
 		case 'create': case 'reload': case 'reload_interface':
-			state.tor_dns_port = _get_tor_dns_port();
-			state.tor_traffic_port = _get_tor_traffic_port();
+			env.tor_dns_port = _get_tor_dns_port();
+			env.tor_traffic_port = _get_tor_traffic_port();
 			status.set_interface('tor', {
 				device_ipv4: '', device_ipv6: '',
-				gateway_ipv4: '53->' + state.tor_dns_port,
-				gateway_ipv6: '80,443->' + state.tor_traffic_port,
+				gateway_ipv4: '53->' + env.tor_dns_port,
+				gateway_ipv6: '80,443->' + env.tor_traffic_port,
 				is_default: false, action: action,
 			});
 			break;
@@ -2972,7 +2971,7 @@ function user_file_process(enabled, path) {
 					push(_pending, rule_line);
 			},
 			download: function(url) {
-				let dl = get_downloader();
+				let dl = env.get_downloader();
 				let tmp = shell('mktemp -q -t ' + shell_quote(pkg.name + '_user.XXXXXXXX'));
 				if (!tmp || !stat(tmp)) return null;
 				let rc = sys(dl.command + ' ' + shell_quote(url) + ' ' + dl.flag + ' ' + shell_quote(tmp));
@@ -3596,7 +3595,7 @@ function status_service(param) {
 		let dev4 = network_get_device(cfg.uplink_interface4);
 		if (!dev4) dev4 = network_get_physdev(cfg.uplink_interface4);
 		status_text += 'Uplink (IPv4): ' + cfg.uplink_interface4 +
-			(dev4 ? '/' + dev4 : '') + '/' + (state.uplink_gw4 || '0.0.0.0') + '.\\n';
+			(dev4 ? '/' + dev4 : '') + '/' + (env.uplink_gw4 || '0.0.0.0') + '.\\n';
 	}
 	if (cfg.uplink_interface6) {
 		let dev6 = network_get_device(cfg.uplink_interface6);
@@ -3607,7 +3606,7 @@ function status_service(param) {
 			dev6 = dev4 || '';
 		}
 		status_text += 'Uplink (IPv6): ' + cfg.uplink_interface6 +
-			(dev6 ? '/' + dev6 : '') + '/' + (state.uplink_gw6 || '::/0') + '.\\n';
+			(dev6 ? '/' + dev6 : '') + '/' + (env.uplink_gw6 || '::/0') + '.\\n';
 	}
 
 	printf('%s\n', _SEP_);
@@ -3751,7 +3750,7 @@ function get_init_status(name) {
 		running: is_service_running_nft(),
 		running_iptables: false,
 		running_nft: is_service_running_nft(),
-		running_nft_file: is_running_nft_file(),
+		running_nft_file: env.is_running_nft_file(),
 		version: pkg.version,
 		packageCompat: +pkg.compat,
 		gateways: gateways,
@@ -3765,13 +3764,13 @@ function get_platform_support(name) {
 	let result = {};
 	result[name] = {
 		ipset_installed: false,
-		nft_installed: state.nft_installed,
-		adguardhome_installed: state.adguardhome_installed,
-		dnsmasq_installed: state.dnsmasq_installed,
-		unbound_installed: state.unbound_installed,
+		nft_installed: env.nft_installed,
+		adguardhome_installed: env.adguardhome_installed,
+		dnsmasq_installed: env.dnsmasq_installed,
+		unbound_installed: env.unbound_installed,
 		adguardhome_ipset_support: false,
 		dnsmasq_ipset_support: false,
-		dnsmasq_nftset_support: state.dnsmasq_nftset_supported,
+		dnsmasq_nftset_support: env.dnsmasq_nftset_supported,
 	};
 	return result;
 }
