@@ -633,7 +633,7 @@ get_text() {
 		warningOutdatedLuciPackage) printf "The WebUI application is outdated (version %s), please update it" "$1";;
 		warningDnsmasqInstanceNoConfdir) printf "Dnsmasq instance '%s' targeted in settings, but it doesn't have its own confdir" "$1";;
 		warningDhcpLanForce) printf "Please set 'dhcp.%s.force=1' to speed up service start-up" "$1";;
-		warningSummary) printf "Warnings encountered, please check %s" "$(get_url '#WarningMessagesDetails')";;
+		warningSummary) printf "Warnings encountered, please check %s" "$(get_url '#warning-messages-details')";;
 		warningIncompatibleDHCPOption6) printf "Incompatible DHCP Option 6 for interface '%s'" "$1";;
 		warningNetifdMissingInterfaceLocal) printf "Netifd setup: option netifd_interface_local is missing, assuming '%s'" "$1";;
 		warningUplinkDown) printf "Uplink/WAN interface is still down, going back to boot mode";;
@@ -2899,7 +2899,7 @@ service_started() {
 			info="$(json get warning "$c" 'info')"
 			output_warning "$(get_text "$code" "$info")"
 		done
-		output_warning "$(get_text 'warningSummary' "$(get_url '#WarningMessagesDetails')")"
+		output_warning "$(get_text 'warningSummary' "$(get_url '#warning-messages-details')")"
 	fi
 	error="$(json get error)"
 	if [ -n "$error" ]; then
@@ -2908,7 +2908,7 @@ service_started() {
 			info="$(json get error "$c" 'info')"
 			output_error "$(get_text "$code" "$info")"
 		done
-		output_error "$(get_text 'errorSummary' "$(get_url '#ErrorMessagesDetails')")"
+		output_error "$(get_text 'errorSummary' "$(get_url '#error-messages-details')")"
 	fi
 	touch "$packageLockFile"
 	if [ -n "$error" ]; then
