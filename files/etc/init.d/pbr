@@ -68,7 +68,6 @@ stop_service() { $_ucode stop_service; }
 reload_service() { rc_procd start_service 'on_reload'; }
 restart_service() { rc_procd start_service 'on_restart'; }
 status_service() { $_ucode status_service "$@"; }
-service_stopped() { procd_set_config_changed firewall; }
 service_started() { [ "$1" = 'on_boot' ] && return 0; $_ucode service_started "$1"; }
 service_triggers() {
 	local procd_boot_trigger_delay procd_reload_delay n
@@ -132,6 +131,7 @@ load_validate_config() {
 		'uplink_interface:network:wan' \
 		'uplink_interface6:network:wan6' \
 		'webui_supported_protocol:list(string)' \
+		'debug_performance:bool:0'\
 		'nft_rule_counter:bool:0'\
 		'nft_set_auto_merge:bool:1'\
 		'nft_set_counter:bool:0'\

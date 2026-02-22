@@ -56,6 +56,7 @@ printf("ipv6_enabled: %d/%d passed\n", pass, pass + fail);
 			"verbosity": "2",
 			"lan_device": ["br-lan"],
 			"resolver_instance": ["*"],
+			"debug_performance": "0",
 			"nft_set_auto_merge": "1",
 			"nft_set_flags_interval": "1",
 			"nft_set_flags_timeout": "0",

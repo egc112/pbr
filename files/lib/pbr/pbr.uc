@@ -13,8 +13,8 @@ import { connect } from 'ubus';
 // by earlier functions.  ucode does not hoist function declarations, so
 // without these `let` bindings the early callers would crash with
 // "access to undeclared variable".
-let is_ignored_interface, nft_check_element, nft_file, resolver;
-let get_supported_interfaces, get_platform_support; // rpcd backward-compat wrappers
+let is_ignored_interface;
+// rpcd backward-compat wrappers are now methods on pbr
 
 // ── Constants ───────────────────────────────────────────────────────
 
@@ -103,7 +103,12 @@ let env = {
 
 // ── Mutable Runtime State ───────────────────────────────────────────
 
-let state = {
+// Config values loaded by env.load_config()
+let cfg = {};
+
+// Unified pbr object — merges runtime state, nft rule accumulator, and interface/error tracking.
+let pbr = {
+	// Runtime state
 	script_name: pkg.name,
 	is_tty: false,
 	output_queue: '',
@@ -121,40 +126,39 @@ let state = {
 	nft_fw4_dump: '',
 	resolver_working_flag: false,
 	resolver_stored_hash: '',
-};
+	_mark_chains_created: null,
 
-// Config values loaded by env.load_config()
-let cfg = {};
+	// NFT rule accumulator
+	nft_lines: [],
 
-// NFT rule accumulator — replaces repeated file appends with a single write at install time.
-let nft_lines = []; // ucode-lsp disable
-
-// Unified status object — replaces scattered state.gateways, state.gateway_summary,
-// state.marks, and the old JSON status file.
-let status = {
-	// Per-interface data: { iface_name: { tid, mark, priority, device_ipv4, device_ipv6,
-	//   gateway_ipv4, gateway_ipv6, is_default, action } }
+	// Per-interface data and error/warning tracking
 	interfaces: {},
-	// Errors and warnings collected during execution
 	errors: [],
 	warnings: [],
-	reset: function() {
-		this.errors = [];
-		this.warnings = [];
-		this.interfaces = {};
-	},
-	get_mark: function(iface) {
-		let iface_key = replace(iface, '-', '_');
-		return this.interfaces[iface_key]?.mark;
-	},
-	set_interface: function(iface, data) {
-		let iface_key = replace(iface, '-', '_');
-		this.interfaces[iface_key] = data;
-	},
-	get_interface: function(iface) {
-		let iface_key = replace(iface, '-', '_');
-		return this.interfaces[iface_key];
-	},
+	// Domain sub-objects (methods assigned later)
+	interface: {},
+	policy: {},
+	dns_policy: {},
+	user_file: {},
+	nft_file: {},
+};
+
+pbr.reset = function() {
+	pbr.errors = [];
+	pbr.warnings = [];
+	pbr.interfaces = {};
+};
+pbr.get_mark = function(iface) {
+	let iface_key = replace(iface, '-', '_');
+	return pbr.interfaces[iface_key]?.mark;
+};
+pbr.set_interface = function(iface, data) {
+	let iface_key = replace(iface, '-', '_');
+	pbr.interfaces[iface_key] = data;
+};
+pbr.get_interface = function(iface) {
+	let iface_key = replace(iface, '-', '_');
+	return pbr.interfaces[iface_key];
 };
 
 // ── UCI Cursor ──────────────────────────────────────────────────────
@@ -302,22 +306,27 @@ let _write = function(level, ...args) {
 	if (level != null && (cfg.verbosity & level) == 0) return;
 
 	// Print to stderr (terminal)
-	if (state.is_tty)
+	if (pbr.is_tty)
 		warn(replace(msg, /\\n/g, '\n'));
 
 	// Queue for logger: flush on newline
 	if (index(msg, '\\n') >= 0 || index(msg, '\n') >= 0) {
-		msg = state.output_queue + msg;
-		state.output_queue = '';
+		msg = pbr.output_queue + msg;
+		pbr.output_queue = '';
 		let clean = replace(msg, /\x1b\[[0-9;]*m/g, '');
 		clean = replace(clean, /\\n/g, '\n');
 		clean = trim(clean);
 		if (clean != '')
-			system('/usr/bin/logger -t ' + shell_quote(state.script_name) + ' ' + shell_quote(clean));
+			system('/usr/bin/logger -t ' + shell_quote(pbr.script_name) + ' ' + shell_quote(clean));
 	} else {
-		state.output_queue += msg;
+		pbr.output_queue += msg;
 	}
 };
+
+function logger_debug(msg) {
+	if (cfg.debug_performance)
+		system('/usr/bin/logger -t ' + shell_quote(pbr.script_name) + ' ' + shell_quote(msg));
+}
 
 let output = {
 	_write:   _write,
@@ -648,7 +657,7 @@ env.is_running_nft_file = function() {
 };
 
 function resolveip_to_nftset(...args) {
-	resolver('wait');
+	pbr.resolver('wait');
 	let out = shell('resolveip ' + join(' ', map(args, (a) => shell_quote(a))));
 	let ips = filter(split(trim(out), '\n'), (l) => length(l) > 0);
 	return join(',', ips);
@@ -733,7 +742,7 @@ function ipv6_leases_to_nftset(arg) {
 function try_cmd(...args) {
 	let cmd = join(' ', args);
 	if (sys(cmd) != 0) {
-		push(status.errors, { code: 'errorTryFailed', info: cmd });
+		push(pbr.errors, { code: 'errorTryFailed', info: cmd });
 		return false;
 	}
 	return true;
@@ -741,7 +750,7 @@ function try_cmd(...args) {
 
 function try_ip(...args) {
 	if (ip(...args) != 0) {
-		push(status.errors, { code: 'errorTryFailed', info: pkg.ip_full + ' ' + join(' ', args) });
+		push(pbr.errors, { code: 'errorTryFailed', info: pkg.ip_full + ' ' + join(' ', args) });
 		return false;
 	}
 	return true;
@@ -815,7 +824,7 @@ function get_text(code, ...args) {
 		warningOutdatedLuciPackage:            sprintf("The WebUI application is outdated (version %s), please update it", a1),
 		warningDnsmasqInstanceNoConfdir:       sprintf("Dnsmasq instance '%s' targeted in settings, but it doesn't have its own confdir", a1),
 		warningDhcpLanForce:                   sprintf("Please set 'dhcp.%s.force=1' to speed up service start-up", a1),
-		warningSummary:                        sprintf("Warnings encountered, please check %s", pkg.url('#WarningMessagesDetails')),
+		warningSummary:                        sprintf("Warnings encountered, please check %s", pkg.url('#warning-messages-details')),
 		warningIncompatibleDHCPOption6:        sprintf("Incompatible DHCP Option 6 for interface '%s'", a1),
 		warningNetifdMissingInterfaceLocal:    sprintf("Netifd setup: option netifd_interface_local is missing, assuming '%s'", a1),
 		warningUplinkDown:                     "Uplink/WAN interface is still down, going back to boot mode",
@@ -873,19 +882,19 @@ function process_url(url) {
 
 	let dl_temp_file = shell('mktemp -q -t ' + shell_quote(pkg.name + '_tmp.XXXXXXXX'));
 	if (!dl_temp_file || !stat(dl_temp_file)) {
-		push(status.errors, { code: 'errorMktempFileCreate', info: pkg.name + '_tmp.XXXXXXXX' });
+		push(pbr.errors, { code: 'errorMktempFileCreate', info: pkg.name + '_tmp.XXXXXXXX' });
 		return '';
 	}
 
 	let result = '';
 	if (is_url_file(url) && !is_present('curl')) {
-		push(status.errors, { code: 'errorFileSchemaRequiresCurl', info: url });
+		push(pbr.errors, { code: 'errorFileSchemaRequiresCurl', info: url });
 	} else if (is_url_https(url) && !dl.https_supported) {
-		push(status.errors, { code: 'errorDownloadUrlNoHttps', info: url });
+		push(pbr.errors, { code: 'errorDownloadUrlNoHttps', info: url });
 	} else if (sys(dl.command + ' ' + shell_quote(url) + ' ' + dl.flag + ' ' + shell_quote(dl_temp_file)) == 0) {
 		result = _sanitize_list(dl_temp_file);
 	} else {
-		push(status.errors, { code: 'errorDownloadUrl', info: url });
+		push(pbr.errors, { code: 'errorDownloadUrl', info: url });
 	}
 
 	unlink(dl_temp_file);
@@ -904,6 +913,7 @@ const config_schema = { // ucode-lsp disable
 	nft_user_set_counter:     ['bool', false],
 	webui_show_ignore_target: ['bool', false],
 	netifd_enabled:           ['bool', false],
+	debug_performance:        ['bool', false],
 	netifd_strict_enforcement:['bool', false],
 	// Booleans (default true)
 	nft_set_auto_merge:       ['bool', true],
@@ -986,7 +996,7 @@ function parse_options(raw, schema) { // ucode-lsp disable
 
 env.load_config = function(param) {
 	if (env._config_loaded) return;
-	state.is_tty = system('[ -t 2 ]') == 0 ? true : false;
+	pbr.is_tty = system('[ -t 2 ]') == 0 ? true : false;
 	let raw = uci_ctx(pkg.name, true).get_all(pkg.name, 'config') || {};
 	cfg = parse_options(raw, config_schema);
 
@@ -1020,7 +1030,7 @@ env.load_config = function(param) {
 
 	if (!cfg.nft_set_flags_timeout && !cfg.nft_set_timeout) cfg.nft_set_gc_interval = '';
 
-	state.nft_rule_params = cfg.nft_rule_counter ? 'counter' : '';
+	pbr.nft_rule_params = cfg.nft_rule_counter ? 'counter' : '';
 
 	let set_parts = [];
 	if (cfg.nft_set_auto_merge) push(set_parts, 'auto-merge;');
@@ -1029,7 +1039,7 @@ env.load_config = function(param) {
 	if (cfg.nft_set_gc_interval) push(set_parts, 'gc_interval "' + cfg.nft_set_gc_interval + '";');
 	if (cfg.nft_set_policy) push(set_parts, 'policy ' + cfg.nft_set_policy + ';');
 	if (cfg.nft_set_timeout) push(set_parts, 'timeout "' + cfg.nft_set_timeout + '";');
-	state.nft_set_params = ' ' + join(' ', set_parts) + ' ';
+	pbr.nft_set_params = ' ' + join(' ', set_parts) + ' ';
 
 	// Handle agh config file
 	if (is_present('AdGuardHome')) {
@@ -1057,7 +1067,7 @@ env.load = function(param) {
 	let _check_system_health = function() {
 		let health_fail = false;
 		if (!env.nft_installed) {
-			push(status.errors, { code: 'errorNoNft' });
+			push(pbr.errors, { code: 'errorNoNft' });
 			health_fail = true;
 		}
 		let auto_inc = uci_ctx('firewall').get('firewall', 'defaults', 'auto_includes');
@@ -1068,28 +1078,28 @@ env.load = function(param) {
 		}
 		let ip_link = shell('readlink /sbin/ip 2>/dev/null');
 		if (ip_link != pkg.ip_full) {
-			push(status.errors, { code: 'errorRequiredBinaryMissing', info: 'ip-full' });
+			push(pbr.errors, { code: 'errorRequiredBinaryMissing', info: 'ip-full' });
 			health_fail = true;
 		}
-		if (!nft_check_element('table', 'fw4')) {
-			push(status.errors, { code: 'errorDefaultFw4TableMissing', info: 'fw4' });
+		if (!pbr.nft_check_element('table', 'fw4')) {
+			push(pbr.errors, { code: 'errorDefaultFw4TableMissing', info: 'fw4' });
 			health_fail = true;
 		}
 		if (is_config_enabled('dns_policy') || is_tor_running()) {
-			if (!nft_check_element('chain', 'dstnat')) {
-				push(status.errors, { code: 'errorDefaultFw4ChainMissing', info: 'dstnat' });
+			if (!pbr.nft_check_element('chain', 'dstnat')) {
+				push(pbr.errors, { code: 'errorDefaultFw4ChainMissing', info: 'dstnat' });
 				health_fail = true;
 			}
 		}
 		let chains = split(pkg.chains_list, ' ');
 		for (let c in chains) {
-			if (!nft_check_element('chain', 'mangle_' + c)) {
-				push(status.errors, { code: 'errorDefaultFw4ChainMissing', info: 'mangle_' + c });
+			if (!pbr.nft_check_element('chain', 'mangle_' + c)) {
+				push(pbr.errors, { code: 'errorDefaultFw4ChainMissing', info: 'mangle_' + c });
 				health_fail = true;
 			}
 		}
 		if (cfg.resolver_set == 'dnsmasq.nftset' && !env.resolver_set_supported) {
-			push(status.warnings, { code: 'warningResolverNotSupported' });
+			push(pbr.warnings, { code: 'warningResolverNotSupported' });
 		}
 		let ctx_dhcp = uci_ctx('dhcp');
 		let ctx_net = uci_ctx('network');
@@ -1098,7 +1108,7 @@ env.load = function(param) {
 			if (!is_lan(iface)) return;
 			let force = ctx_dhcp.get('dhcp', iface, 'force');
 			if (force == '0') {
-				push(status.warnings, { code: 'warningDhcpLanForce', info: iface });
+				push(pbr.warnings, { code: 'warningDhcpLanForce', info: iface });
 			}
 			if (!cfg.resolver_set) return;
 			let dhcp_option = ctx_dhcp.get('dhcp', iface, 'dhcp_option');
@@ -1111,7 +1121,7 @@ env.load = function(param) {
 					let option = parts[0];
 					let value = parts[1];
 					if (option == '6' && value != ipaddr_base) {
-						push(status.warnings, { code: 'warningIncompatibleDHCPOption6', info: iface + ': ' + value });
+						push(pbr.warnings, { code: 'warningIncompatibleDHCPOption6', info: iface + ': ' + value });
 					}
 				}
 			}
@@ -1119,24 +1129,35 @@ env.load = function(param) {
 		return !health_fail;
 	};
 
+	let start_time, end_time;
+
 	switch (param) {
 	case 'on_start':
 		output.info('Loading environment (' + param + ') ');
+		start_time = time();
 		env.load_config(param);
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Loading config took ' + (end_time - start_time) + 's');
 		if (!cfg.enabled) {
 			output.info_failn();
-			push(status.errors, { code: 'errorServiceDisabled' });
+			push(pbr.errors, { code: 'errorServiceDisabled' });
 			output.error(get_text('errorServiceDisabled'));
 			output.print("Run the following commands before starting service again:\\n");
 			output.print("uci set " + pkg.name + ".config.enabled='1'; uci commit " + pkg.name + ";\\n");
 			return false;
 		}
+		start_time = time();
 		env.detect();
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Detecting environment took ' + (end_time - start_time) + 's');
 		if (!_check_system_health()) {
 			output.info_failn();
 			return false;
 		}
+		start_time = time();
 		env.load_network(param);
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Loading network data took ' + (end_time - start_time) + 's');
 		output.info_okn();
 		break;
 
@@ -1144,9 +1165,18 @@ env.load = function(param) {
 	case 'on_reload':
 	case 'on_interface_reload':
 		output.info('Loading environment (' + param + ') ');
+		start_time = time();
 		env.load_config(param);
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Loading config took ' + (end_time - start_time) + 's');
+		start_time = time();
 		env.detect();
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Detecting environment took ' + (end_time - start_time) + 's');
+		start_time = time();
 		env.load_network(param);
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Loading network data took ' + (end_time - start_time) + 's');
 		output.info_okn();
 		break;
 
@@ -1247,8 +1277,8 @@ env.load_network = function(param) {
 function is_wan_up(param) {
 	let ctx = uci_ctx('network');
 	if (!ctx.get('network', cfg.uplink_interface4)) {
-		push(status.errors, { code: 'errorNoUplinkInterface', info: cfg.uplink_interface4 });
-		push(status.errors, { code: 'errorNoUplinkInterfaceHint', info: pkg.url('#uplink_interface') });
+		push(pbr.errors, { code: 'errorNoUplinkInterface', info: cfg.uplink_interface4 });
+		push(pbr.errors, { code: 'errorNoUplinkInterfaceHint', info: pkg.url('#uplink_interface') });
 		return false;
 	}
 	network_flush_cache();
@@ -1256,7 +1286,7 @@ function is_wan_up(param) {
 	if (env.uplink_gw) {
 		return true;
 	} else {
-		push(status.errors, { code: 'errorNoUplinkGateway' });
+		push(pbr.errors, { code: 'errorNoUplinkGateway' });
 		return false;
 	}
 }
@@ -1264,7 +1294,7 @@ function is_wan_up(param) {
 // ── NFT Operations ──────────────────────────────────────────────────
 
 function nft_add(line) {
-	if (line) nft_file('add', 'main', line);}
+	if (line) pbr.nft_file.append('main', line);}
 
 function nft4(line) {
 	nft_add(line);
@@ -1280,12 +1310,12 @@ function nft_call(...args) {
 	return sys('nft ' + join(' ', args)) == 0;
 }
 
-nft_check_element = function(element_type, name) {
-	if (!state.nft_fw4_dump)
-		state.nft_fw4_dump = shell('nft list table inet fw4 2>&1');
+pbr.nft_check_element = function(element_type, name) {
+	if (!pbr.nft_fw4_dump)
+		pbr.nft_fw4_dump = shell('nft list table inet fw4 2>&1');
 	if (element_type == 'table' && name == 'fw4')
-		return !!(state.nft_fw4_dump && state.nft_fw4_dump != '');
-	let lines = split(state.nft_fw4_dump, '\n');
+		return !!(pbr.nft_fw4_dump && pbr.nft_fw4_dump != '');
+	let lines = split(pbr.nft_fw4_dump, '\n');
 	for (let line in lines) {
 		if (index(line, element_type) >= 0 && index(line, name) >= 0)
 			return true;
@@ -1293,88 +1323,106 @@ nft_check_element = function(element_type, name) {
 	return false;
 };
 
-nft_file = function(command, target, ...extra) {
+pbr.nft_file.append = function(target, ...extra) {
+	let line = join(' ', extra);
+	if (line)
+		push(pbr.nft_lines, line);
+	return true;
+};
+
+pbr.nft_file.init = function(target) {
 	let nft_prefix = pkg.nft_prefix;
 	let nft_table = pkg.nft_table;
 	let chains_list = pkg.chains_list;
 
-	let key = command + ':' + target;
-
-	switch (key) {
-	case 'add:main':
-	case 'add:netifd': {
-		let line = join(' ', extra);
-		if (line)
-			push(nft_lines, line);
-		break;
-	}
-	case 'create:main': {
+	switch (target) {
+	case 'main': {
 		unlink(pkg.nft_temp_file);
 		unlink(pkg.nft_main_file);
 		mkdir_p(dirname(pkg.nft_temp_file));
 		mkdir_p(dirname(pkg.nft_main_file));
-		nft_lines = [];
-		state._mark_chains_created = {};
+		pbr.nft_lines = [];
+		pbr._mark_chains_created = {};
 		// Emit nft define statements for fw mark/mask and per-interface chain names
-		push(nft_lines, 'define ' + nft_prefix + '_fw_mark = ' + cfg.fw_mask);
-		push(nft_lines, 'define ' + nft_prefix + '_fw_mask = ' + cfg.fw_maskXor);
-		for (let iname in keys(status.interfaces)) {
-			let idata = status.interfaces[iname];
+		push(pbr.nft_lines, 'define ' + nft_prefix + '_fw_mark = ' + cfg.fw_mask);
+		push(pbr.nft_lines, 'define ' + nft_prefix + '_fw_mask = ' + cfg.fw_maskXor);
+		for (let iname in keys(pbr.interfaces)) {
+			let idata = pbr.interfaces[iname];
 			if (idata?.chain_name) {
-				push(nft_lines, 'define ' + nft_prefix + '_' + iname + '_chain = ' + idata.chain_name);
+				push(pbr.nft_lines, 'define ' + nft_prefix + '_' + iname + '_chain = ' + idata.chain_name);
 			}
 		}
-		push(nft_lines, '');
+		push(pbr.nft_lines, '');
 		// Create pbr chains in fw4 table
 		let chains = split(chains_list, ' ');
 		for (let ch in ['dstnat', ...chains])
-			push(nft_lines, 'add chain inet ' + nft_table + ' ' + nft_prefix + '_' + ch + ' {}');
-		push(nft_lines, '');
+			push(pbr.nft_lines, 'add chain inet ' + nft_table + ' ' + nft_prefix + '_' + ch + ' {}');
+		push(pbr.nft_lines, '');
 		// Add jump rules from fw4 chains to pbr chains
-		push(nft_lines, 'add rule inet ' + nft_table + ' dstnat jump ' + nft_prefix + '_dstnat');
-		push(nft_lines, 'add rule inet ' + nft_table + ' mangle_prerouting jump ' + nft_prefix + '_prerouting');
-		push(nft_lines, 'add rule inet ' + nft_table + ' mangle_output jump ' + nft_prefix + '_output');
-		push(nft_lines, 'add rule inet ' + nft_table + ' mangle_forward jump ' + nft_prefix + '_forward');
-		push(nft_lines, '');
+		push(pbr.nft_lines, 'add rule inet ' + nft_table + ' dstnat jump ' + nft_prefix + '_dstnat');
+		push(pbr.nft_lines, 'add rule inet ' + nft_table + ' mangle_prerouting jump ' + nft_prefix + '_prerouting');
+		push(pbr.nft_lines, 'add rule inet ' + nft_table + ' mangle_output jump ' + nft_prefix + '_output');
+		push(pbr.nft_lines, 'add rule inet ' + nft_table + ' mangle_forward jump ' + nft_prefix + '_forward');
+		push(pbr.nft_lines, '');
 		// Insert PBR guards
-		let rule_params = state.nft_rule_params ? ' ' + state.nft_rule_params : '';
+		let rule_params = pbr.nft_rule_params ? ' ' + pbr.nft_rule_params : '';
 		for (let ch in chains)
-			push(nft_lines, 'add rule inet ' + nft_table + ' ' + nft_prefix + '_' + ch +
+			push(pbr.nft_lines, 'add rule inet ' + nft_table + ' ' + nft_prefix + '_' + ch +
 				rule_params + ' meta mark & ' + cfg.fw_mask + ' != 0 return');
 		break;
 	}
-	case 'create:netifd':
+	case 'netifd':
 		unlink(pkg.nft_temp_file);
 		unlink(pkg.nft_netifd_file);
 		mkdir_p(dirname(pkg.nft_temp_file));
 		mkdir_p(dirname(pkg.nft_netifd_file));
-		nft_lines = [];
+		pbr.nft_lines = [];
 		break;
-	case 'delete:main':
-		nft_lines = [];
+	}
+	return true;
+};
+
+pbr.nft_file.remove = function(target) {
+	switch (target) {
+	case 'main':
+		pbr.nft_lines = [];
 		unlink(pkg.nft_temp_file);
 		unlink(pkg.nft_main_file);
 		break;
-	case 'delete:netifd':
+	case 'netifd':
 		output.print('Removing fw4 netifd nft file ');
 		if (unlink(pkg.nft_netifd_file) != false) {
 			output.okbn();
 		} else {
-			push(status.errors, { code: 'errorNftNetifdFileDelete', info: pkg.nft_netifd_file });
+			push(pbr.errors, { code: 'errorNftNetifdFileDelete', info: pkg.nft_netifd_file });
 			output.failn();
 		}
 		break;
-	case 'exists:main':
+	}
+	return true;
+};
+
+pbr.nft_file.exists = function(target) {
+	switch (target) {
+	case 'main': {
 		let sm = stat(pkg.nft_main_file);
 		return sm != null && sm.size > 0;
-	case 'exists:netifd':
+	}
+	case 'netifd': {
 		let sn = stat(pkg.nft_netifd_file);
 		return sn != null && sn.size > 0;
-	case 'install:main': {
-		if (!length(nft_lines)) return false;
+	}
+	}
+	return false;
+};
+
+pbr.nft_file.apply = function(target) {
+	switch (target) {
+	case 'main': {
+		if (!length(pbr.nft_lines)) return false;
 		mkdir_p(dirname(pkg.nft_temp_file));
 		mkdir_p(dirname(pkg.nft_main_file));
-		writefile(pkg.nft_temp_file, '#!/usr/sbin/nft -f\n\n' + join('\n', nft_lines) + '\n');
+		writefile(pkg.nft_temp_file, '#!/usr/sbin/nft -f\n\n' + join('\n', pbr.nft_lines) + '\n');
 		output.print('Installing fw4 nft file ');
 		if (nft_call('-c', '-f', pkg.nft_temp_file) &&
 			sys('cp -f ' + shell_quote(pkg.nft_temp_file) + ' ' + shell_quote(pkg.nft_main_file)) == 0) {
@@ -1382,45 +1430,54 @@ nft_file = function(command, target, ...extra) {
 			sys('fw4 -q reload');
 			return true;
 		} else {
-			push(status.errors, { code: 'errorNftMainFileInstall', info: pkg.nft_temp_file });
+			push(pbr.errors, { code: 'errorNftMainFileInstall', info: pkg.nft_temp_file });
 			output.failn();
 			return false;
 		}
 	}
-	case 'install:netifd': {
-		if (!length(nft_lines)) return false;
+	case 'netifd': {
+		if (!length(pbr.nft_lines)) return false;
 		mkdir_p(dirname(pkg.nft_temp_file));
 		mkdir_p(dirname(pkg.nft_netifd_file));
-		writefile(pkg.nft_temp_file, '#!/usr/sbin/nft -f\n\n' + join('\n', nft_lines) + '\n');
+		writefile(pkg.nft_temp_file, '#!/usr/sbin/nft -f\n\n' + join('\n', pbr.nft_lines) + '\n');
 		output.print('Installing fw4 netifd nft file ');
 		if (nft_call('-c', '-f', pkg.nft_temp_file) &&
 			sys('cp -f ' + shell_quote(pkg.nft_temp_file) + ' ' + shell_quote(pkg.nft_netifd_file)) == 0) {
 			output.okbn();
 			return true;
 		} else {
-			push(status.errors, { code: 'errorNftNetifdFileInstall', info: pkg.nft_temp_file });
+			push(pbr.errors, { code: 'errorNftNetifdFileInstall', info: pkg.nft_temp_file });
 			output.failn();
 			return false;
 		}
 	}
-	case 'match:temp': {
-		let pattern = length(extra) > 0 ? extra[0] : '';
-		let content = join('\n', nft_lines);
-		return index(content, pattern) >= 0;
 	}
-	case 'filter:temp': {
-		// Remove all accumulated lines matching the given pattern string
-		let pattern = length(extra) > 0 ? extra[0] : '';
-		if (pattern)
-			nft_lines = filter(nft_lines, l => index(l, pattern) < 0);
-		break;
-	}
-	case 'sed:netifd': {
-		let sed_args2 = join(' ', extra);
-		sys('sed -i ' + sed_args2 + ' ' + shell_quote(pkg.nft_netifd_file));
-		break;
-	}
-	case 'show:main': {
+	return true;
+};
+
+pbr.nft_file.match = function(target, ...extra) {
+	let pattern = length(extra) > 0 ? extra[0] : '';
+	let content = join('\n', pbr.nft_lines);
+	return index(content, pattern) >= 0;
+};
+
+pbr.nft_file.filter = function(target, ...extra) {
+	// Remove all accumulated lines matching the given pattern string
+	let pattern = length(extra) > 0 ? extra[0] : '';
+	if (pattern)
+		pbr.nft_lines = filter(pbr.nft_lines, l => index(l, pattern) < 0);
+	return true;
+};
+
+pbr.nft_file.sed = function(target, ...extra) {
+	let sed_args2 = join(' ', extra);
+	sys('sed -i ' + sed_args2 + ' ' + shell_quote(pkg.nft_netifd_file));
+	return true;
+};
+
+pbr.nft_file.show = function(target) {
+	switch (target) {
+	case 'main': {
 		let content_m = readfile(pkg.nft_main_file) || '';
 		let lines_m = split(content_m, '\n');
 		let result_m = pkg.name + ' fw4 nft file: ' + pkg.nft_main_file + '\n';
@@ -1428,7 +1485,7 @@ nft_file = function(command, target, ...extra) {
 			result_m += lines_m[i] + '\n';
 		return result_m;
 	}
-	case 'show:netifd': {
+	case 'netifd': {
 		let content_n = readfile(pkg.nft_netifd_file) || '';
 		let lines_n = split(content_n, '\n');
 		let result_n = pkg.name + ' fw4 netifd nft file: ' + pkg.nft_netifd_file + '\n';
@@ -1437,7 +1494,7 @@ nft_file = function(command, target, ...extra) {
 		return result_n;
 	}
 	}
-	return true;
+	return '';
 };
 
 // ── nftset() ────────────────────────────────────────────────────────
@@ -1455,7 +1512,7 @@ function nftset(command, iface, target, type_val, uid, comment, param) {
 		(target ? '_' + target : '') + (type_val ? '_' + type_val : '') + (uid ? '_' + uid : '');
 
 	if (length(nftset4) > 255) {
-		push(status.errors, { code: 'errorNftsetNameTooLong', info: nftset4 });
+		push(pbr.errors, { code: 'errorNftsetNameTooLong', info: nftset4 });
 		return false;
 	}
 
@@ -1484,7 +1541,7 @@ function nftset(command, iface, target, type_val, uid, comment, param) {
 			if (!param4) param4 = resolveip_to_nftset4(param);
 			if (!param6) param6 = resolveip_to_nftset6(param);
 			if (!param4 && !param6) {
-				push(status.errors, { code: 'errorFailedToResolve', info: param });
+				push(pbr.errors, { code: 'errorFailedToResolve', info: param });
 			} else {
 				if (param4) { nft4('add element inet ' + nft_table + ' ' + nftset4 + ' { ' + param4 + ' }'); ipv4_error = false; }
 				if (param6) { nft6('add element inet ' + nft_table + ' ' + nftset6 + ' { ' + param6 + ' }'); ipv6_error = false; }
@@ -1510,48 +1567,48 @@ function nftset(command, iface, target, type_val, uid, comment, param) {
 		switch (type_val) {
 		case 'ip':
 		case 'net':
-			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 			ipv4_error = false;
-			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 			ipv6_error = false;
 			break;
 		case 'mac':
-			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ether_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ether_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 			ipv4_error = false;
-			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ether_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ether_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 			ipv6_error = false;
 			break;
 		}
 		break;
 	case 'create_dnsmasq_set':
-		nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+		nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 		ipv4_error = false;
-		nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+		nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 		ipv6_error = false;
 		break;
 	case 'create_user_set':
 		switch (type_val) {
 		case 'ip':
 		case 'net':
-			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 			ipv4_error = false;
-			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + state.nft_set_params + ' comment "' + comment + '";}');
+			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + pbr.nft_set_params + ' comment "' + comment + '";}');
 			ipv6_error = false;
 			if (target == 'dst') {
-				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' daddr @' + nftset4 + ' ' + state.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' daddr @' + nftset6 + ' ' + state.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' daddr @' + nftset4 + ' ' + pbr.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' daddr @' + nftset6 + ' ' + pbr.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
 			} else if (target == 'src') {
-				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' saddr @' + nftset4 + ' ' + state.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' saddr @' + nftset6 + ' ' + state.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' saddr @' + nftset4 + ' ' + pbr.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' saddr @' + nftset6 + ' ' + pbr.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
 			}
 			break;
 		case 'mac':
-			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ether_addr;' + state.nft_set_params + ' comment "' + comment + '"; }');
+			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ether_addr;' + pbr.nft_set_params + ' comment "' + comment + '"; }');
 			ipv4_error = false;
-			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ether_addr;' + state.nft_set_params + ' comment "' + comment + '"; }');
+			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ether_addr;' + pbr.nft_set_params + ' comment "' + comment + '"; }');
 			ipv6_error = false;
-			nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + nftset4 + ' ' + state.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-			nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + nftset6 + ' ' + state.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+			nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + nftset4 + ' ' + pbr.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+			nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + nftset6 + ' ' + pbr.nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
 			break;
 		}
 		break;
@@ -1600,7 +1657,7 @@ function nftset(command, iface, target, type_val, uid, comment, param) {
 
 // ── cleanup() ───────────────────────────────────────────────────────
 
-function cleanup(...actions) {
+pbr.cleanup = function(...actions) {
 	for (let action in actions) {
 		switch (action) {
 		case 'rt_tables': {
@@ -1702,14 +1759,14 @@ function cleanup(...actions) {
 		}
 	}
 	return true;
-}
+};
 
 // ── Status Management ────────────────────────────────────────────────
 // All status is kept in-memory in status — no JSON file I/O.
 
 // ── resolver() ──────────────────────────────────────────────────────
 
-resolver = function(param, iface, target, type_val, uid, name, value) {
+pbr.resolver = function(param, iface, target, type_val, uid, name, value) {
 	let _uci_has_changes = function(config) {
 		return length(uci_ctx(config).changes(config) || []) > 0;
 	};
@@ -1734,11 +1791,11 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 					dhcp_cfg = s['.name'];
 			});
 		}
-		if (!state.dnsmasq_ubus)
-			state.dnsmasq_ubus = ubus_call('service', 'list', { name: 'dnsmasq' });
+		if (!pbr.dnsmasq_ubus)
+			pbr.dnsmasq_ubus = ubus_call('service', 'list', { name: 'dnsmasq' });
 		let cfg_file = null;
-		if (state.dnsmasq_ubus?.dnsmasq?.instances?.[dhcp_cfg]?.command) {
-			let cmd_parts = state.dnsmasq_ubus.dnsmasq.instances[dhcp_cfg].command;
+		if (pbr.dnsmasq_ubus?.dnsmasq?.instances?.[dhcp_cfg]?.command) {
+			let cmd_parts = pbr.dnsmasq_ubus.dnsmasq.instances[dhcp_cfg].command;
 			if (type(cmd_parts) == 'array') {
 				for (let i = 0; i < length(cmd_parts); i++) {
 					if (cmd_parts[i] == '-C' && i + 1 < length(cmd_parts)) {
@@ -1799,12 +1856,12 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 		case 'compare_hash': return true;
 		case 'store_hash': return true;
 		case 'wait': {
-			if (state.resolver_working_flag) return true;
+			if (pbr.resolver_working_flag) return true;
 			let timeout = +(iface || '30');
 			let hostname = uci_ctx('system').get('system', '@system[0]', 'hostname') || 'OpenWrt';
 			for (let count = 0; count < timeout; count++) {
 				if (sys('resolveip ' + shell_quote(hostname)) == 0) {
-					state.resolver_working_flag = true;
+					pbr.resolver_working_flag = true;
 					return true;
 				}
 				system('sleep 1');
@@ -1894,24 +1951,24 @@ resolver = function(param, iface, target, type_val, uid, name, value) {
 				let m = match(md5_out, /^(\S+)/);
 				resolver_new_hash = m ? m[1] : null;
 			}
-			return resolver_new_hash != state.resolver_stored_hash;
+			return resolver_new_hash != pbr.resolver_stored_hash;
 		}
 		case 'store_hash': {
 			let s = stat(pkg.dnsmasq_file);
 			if (s && s.size > 0) {
 				let md5_out = shell('md5sum ' + shell_quote(pkg.dnsmasq_file));
 				let m = match(md5_out, /^(\S+)/);
-				state.resolver_stored_hash = m ? m[1] : '';
+				pbr.resolver_stored_hash = m ? m[1] : '';
 			}
 			return true;
 		}
 		case 'wait': {
-			if (state.resolver_working_flag) return true;
+			if (pbr.resolver_working_flag) return true;
 			let timeout = +(iface || '30');
 			let hostname = uci_ctx('system').get('system', '@system[0]', 'hostname') || 'OpenWrt';
 			for (let count = 0; count < timeout; count++) {
 				if (sys('resolveip ' + shell_quote(hostname)) == 0) {
-					state.resolver_working_flag = true;
+					pbr.resolver_working_flag = true;
 					return true;
 				}
 				system('sleep 1');
@@ -1958,8 +2015,8 @@ function classify_addr(value, direction, iface, uid, name, use_resolver) {
 		param6 = param4;
 	} else if (is_domain(first_val)) {
 		if (use_resolver && iface &&
-			resolver('create_resolver_set', iface, target, 'ip', uid, name) &&
-			resolver('add_resolver_element', iface, target, 'ip', uid, name, value)) {
+			pbr.resolver('create_resolver_set', iface, target, 'ip', uid, name) &&
+			pbr.resolver('add_resolver_element', iface, target, 'ip', uid, name, value)) {
 			let nft_prefix = pkg.nft_prefix;
 			param4 = pkg.nft_ipv4_flag + ' ' + addr_dir + ' ' + negation +
 				'@' + nft_prefix + '_' + iface + '_4_' + target + '_ip_' + uid + nftset_suffix;
@@ -1972,7 +2029,7 @@ function classify_addr(value, direction, iface, uid, name, use_resolver) {
 				let r4 = resolveip_to_nftset4(d);
 				let r6 = resolveip_to_nftset6(d);
 				if (!r4 && !r6) {
-					push(status.errors, { code: 'errorFailedToResolve', info: d });
+					push(pbr.errors, { code: 'errorFailedToResolve', info: d });
 				} else {
 					if (r4) is4 += (is4 ? ', ' : '') + r4;
 					if (r6) is6 += (is6 ? ', ' : '') + r6;
@@ -1994,7 +2051,7 @@ function classify_addr(value, direction, iface, uid, name, use_resolver) {
 // ── DNS Policy Routing ───────────────────────────────────────────────
 // Original idea by @egc112: https://github.com/egc112/OpenWRT-egc-add-on/tree/main/stop-dns-leak
 
-function dns_policy_routing(name, src_addr, dest_dns, uid, dest_dns_port, dest_dns_ipv4, dest_dns_ipv6) {
+pbr.dns_policy.routing = function(name, src_addr, dest_dns, uid, dest_dns_port, dest_dns_ipv4, dest_dns_ipv6) {
 	let nft_insert = 'add';
 	let protos = ['tcp', 'udp'];
 	let chain = 'dstnat';
@@ -2002,21 +2059,21 @@ function dns_policy_routing(name, src_addr, dest_dns, uid, dest_dns_port, dest_d
 	let nft_prefix = pkg.nft_prefix;
 
 	if (!dest_dns_ipv4 && !dest_dns_ipv6) {
-		state.process_dns_policy_error = true;
-		push(status.errors, { code: 'errorPolicyProcessNoInterfaceDns', info: "'" + dest_dns + "'" });
+		pbr.process_dns_policy_error = true;
+		push(pbr.errors, { code: 'errorPolicyProcessNoInterfaceDns', info: "'" + dest_dns + "'" });
 		return 1;
 	}
 
 	if (!cfg.ipv6_enabled && is_ipv6(str_first_word(src_addr))) {
-		state.process_dns_policy_error = true;
-		push(status.errors, { code: 'errorPolicyProcessNoIpv6', info: name });
+		pbr.process_dns_policy_error = true;
+		push(pbr.errors, { code: 'errorPolicyProcessNoIpv6', info: name });
 		return 1;
 	}
 
 	if ((is_ipv4(str_first_word(src_addr)) && !dest_dns_ipv4) ||
 		(is_ipv6(str_first_word(src_addr)) && !dest_dns_ipv6)) {
-		state.process_dns_policy_error = true;
-		push(status.errors, { code: 'errorPolicyProcessMismatchFamily',
+		pbr.process_dns_policy_error = true;
+		push(pbr.errors, { code: 'errorPolicyProcessMismatchFamily',
 			info: name + ": '" + src_addr + "' '" + dest_dns + "':'" + dest_dns_port + "'" });
 		return 1;
 	}
@@ -2039,7 +2096,7 @@ function dns_policy_routing(name, src_addr, dest_dns, uid, dest_dns_port, dest_d
 			inline_set_ipv6_empty = r.empty6;
 		}
 
-		let rule_params = state.nft_rule_params ? ' ' + state.nft_rule_params : '';
+		let rule_params = pbr.nft_rule_params ? ' ' + pbr.nft_rule_params : '';
 		param4 = nft_insert + ' rule inet ' + nft_table + ' ' + nft_prefix + '_' + chain +
 			(param4 ? ' ' + param4 : '') + rule_params + ' meta nfproto ipv4 ' + proto_i + ' ' + dest4 +
 			' comment "' + name + '"';
@@ -2048,45 +2105,45 @@ function dns_policy_routing(name, src_addr, dest_dns, uid, dest_dns_port, dest_d
 			' comment "' + name + '"';
 
 		let ipv4_error = false, ipv6_error = false;
-		if (state.pbr_nft_prev_param4 != param4 && first_value &&
+		if (pbr.pbr_nft_prev_param4 != param4 && first_value &&
 			!is_ipv6(first_value) && !inline_set_ipv4_empty && dest_dns_ipv4) {
 			if (!nft4(param4)) ipv4_error = true;
-			state.pbr_nft_prev_param4 = param4;
+			pbr.pbr_nft_prev_param4 = param4;
 		}
-		if (state.pbr_nft_prev_param6 != param6 && param4 != param6 &&
+		if (pbr.pbr_nft_prev_param6 != param6 && param4 != param6 &&
 			first_value && !is_ipv4(first_value) && !inline_set_ipv6_empty && dest_dns_ipv6) {
 			if (!nft6(param6)) ipv6_error = true;
-			state.pbr_nft_prev_param6 = param6;
+			pbr.pbr_nft_prev_param6 = param6;
 		}
 
 		if (cfg.ipv6_enabled && ipv4_error && ipv6_error) {
-			state.process_dns_policy_error = true;
-			push(status.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
-			push(status.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
-			push(status.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param6 });
+			pbr.process_dns_policy_error = true;
+			push(pbr.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
+			push(pbr.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
+			push(pbr.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param6 });
 		} else if (!cfg.ipv6_enabled && ipv4_error) {
-			state.process_dns_policy_error = true;
-			push(status.errors, { code: 'errorPolicyProcessInsertionFailedIpv4', info: name });
-			push(status.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
+			pbr.process_dns_policy_error = true;
+			push(pbr.errors, { code: 'errorPolicyProcessInsertionFailedIpv4', info: name });
+			push(pbr.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
 		}
 	}
-}
+};
 
 // ── Policy Routing ──────────────────────────────────────────────────
 
-function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, proto, chain, uid) {
+pbr.policy.routing = function(name, iface, src_addr, src_port, dest_addr, dest_port, proto, chain, uid) {
 	let nft_insert = 'add';
 	let nft_table = pkg.nft_table;
 	let nft_prefix = pkg.nft_prefix;
-	let mark = status.get_mark(iface);
+	let mark = pbr.get_mark(iface);
 
 	proto = lc(proto || '');
 	chain = lc(chain || '') || 'prerouting';
 
 	if (!cfg.ipv6_enabled &&
 		(is_ipv6(str_first_word(src_addr)) || is_ipv6(str_first_word(dest_addr)))) {
-		state.process_policy_error = true;
-		push(status.errors, { code: 'errorPolicyProcessNoIpv6', info: name });
+		pbr.process_policy_error = true;
+		push(pbr.errors, { code: 'errorPolicyProcessNoIpv6', info: name });
 		return 1;
 	}
 
@@ -2101,18 +2158,18 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 		dest4 = 'tproxy ' + pkg.nft_ipv4_flag + ' to :' + xport + ' accept';
 		dest6 = 'tproxy ' + pkg.nft_ipv6_flag + ' to :' + xport + ' accept';
 	} else if (is_mwan4_strategy(iface)) {
-		let strategy_data = status.get_interface(iface);
+		let strategy_data = pbr.get_interface(iface);
 		let sname = strategy_data?.strategy_name;
 		if (sname) {
 			dest4 = 'goto ' + pkg.mwan4_nft_prefix + '_strategy_' + sname + '_ipv4';
 			dest6 = 'goto ' + pkg.mwan4_nft_prefix + '_strategy_' + sname + '_ipv6';
 		} else {
-			state.process_policy_error = true;
-			push(status.errors, { code: 'errorPolicyProcessUnknownFwmark', info: iface });
+			pbr.process_policy_error = true;
+			push(pbr.errors, { code: 'errorPolicyProcessUnknownFwmark', info: iface });
 			return 1;
 		}
 	} else if (mark) {
-		let chain_name = status.get_interface(iface).chain_name;
+		let chain_name = pbr.get_interface(iface).chain_name;
 		if (index(chain_name, pkg.mwan4_nft_prefix) == 0) {
 			dest4 = 'goto ' + chain_name + '_ipv4';
 			dest6 = 'goto ' + chain_name + '_ipv6';
@@ -2124,8 +2181,8 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 		dest4 = 'return';
 		dest6 = 'return';
 	} else {
-		state.process_policy_error = true;
-		push(status.errors, { code: 'errorPolicyProcessUnknownFwmark', info: iface });
+		pbr.process_policy_error = true;
+		push(pbr.errors, { code: 'errorPolicyProcessUnknownFwmark', info: iface });
 		return 1;
 	}
 
@@ -2145,8 +2202,8 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 		if (proto_i == 'all') proto_i = '';
 
 		if (proto_i && !is_supported_protocol(proto_i)) {
-			state.process_policy_error = true;
-			push(status.errors, { code: 'errorPolicyProcessUnknownProtocol', info: name + ": '" + proto_i + "'" });
+			pbr.process_policy_error = true;
+			push(pbr.errors, { code: 'errorPolicyProcessUnknownProtocol', info: name + ": '" + proto_i + "'" });
 			return 1;
 		}
 
@@ -2192,7 +2249,7 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 			param6 += (param6 ? ' ' : '') + port_param;
 		}
 
-		let rule_params = state.nft_rule_params ? ' ' + state.nft_rule_params : '';
+		let rule_params = pbr.nft_rule_params ? ' ' + pbr.nft_rule_params : '';
 
 		if (is_tor(iface)) {
 			let ipv4_error = false, ipv6_error = false;
@@ -2212,11 +2269,11 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 				if (!nft4(p4_base + ' ' + dest_rule)) ipv4_error = true;
 				if (!nft6(p6_base + ' ' + dest_rule)) ipv6_error = true;
 				if (cfg.ipv6_enabled && ipv4_error && ipv6_error) {
-					state.process_policy_error = true;
-					push(status.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
+					pbr.process_policy_error = true;
+					push(pbr.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
 				} else if (!cfg.ipv6_enabled && ipv4_error) {
-					state.process_policy_error = true;
-					push(status.errors, { code: 'errorPolicyProcessInsertionFailedIpv4', info: name });
+					pbr.process_policy_error = true;
+					push(pbr.errors, { code: 'errorPolicyProcessInsertionFailedIpv4', info: name });
 				}
 			}
 		} else {
@@ -2226,37 +2283,37 @@ function policy_routing(name, iface, src_addr, src_port, dest_addr, dest_port, p
 				(param6 ? ' ' + param6 : '') + rule_params + ' ' + (dest6 || '') + ' comment "' + name + '"';
 
 			let ipv4_error = false, ipv6_error = false;
-			if (state.pbr_nft_prev_param4 != param4 &&
+			if (pbr.pbr_nft_prev_param4 != param4 &&
 				!src_inline_set_ipv4_empty && !dest_inline_set_ipv4_empty) {
 				if (!nft4(param4)) ipv4_error = true;
-				state.pbr_nft_prev_param4 = param4;
+				pbr.pbr_nft_prev_param4 = param4;
 			}
-			if (state.pbr_nft_prev_param6 != param6 && param4 != param6 &&
+			if (pbr.pbr_nft_prev_param6 != param6 && param4 != param6 &&
 				!src_inline_set_ipv6_empty && !dest_inline_set_ipv6_empty) {
 				if (!nft6(param6)) ipv6_error = true;
-				state.pbr_nft_prev_param6 = param6;
+				pbr.pbr_nft_prev_param6 = param6;
 			}
 
 			if (cfg.ipv6_enabled && ipv4_error && ipv6_error) {
-				state.process_policy_error = true;
-				push(status.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
-				push(status.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
-				push(status.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param6 });
+				pbr.process_policy_error = true;
+				push(pbr.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
+				push(pbr.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
+				push(pbr.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param6 });
 			} else if (!cfg.ipv6_enabled && ipv4_error) {
-				state.process_policy_error = true;
-				push(status.errors, { code: 'errorPolicyProcessInsertionFailedIpv4', info: name });
-				push(status.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
+				pbr.process_policy_error = true;
+				push(pbr.errors, { code: 'errorPolicyProcessInsertionFailedIpv4', info: name });
+				push(pbr.errors, { code: 'errorPolicyProcessCMD', info: 'nft ' + param4 });
 			}
 		}
 	}
-}
+};
 
 // ── DNS Policy Process ──────────────────────────────────────────────
 
-function dns_policy_process(uid, enabled, name, src_addr, dest_dns, dest_dns_port) { // ucode-lsp disable
+pbr.dns_policy.process = function(uid, enabled, name, src_addr, dest_dns, dest_dns_port) { // ucode-lsp disable
 	if (enabled != '1') return 0;
 
-	src_addr = replace(src_addr, /[,;{}]/g, ' ');
+	src_addr = replace(src_addr, /[,;{};]/g, ' ');
 	dest_dns = replace(dest_dns, /[,;{}]/g, ' ');
 
 	// Process URLs in src_addr
@@ -2287,15 +2344,15 @@ function dns_policy_process(uid, enabled, name, src_addr, dest_dns, dest_dns_por
 		}
 	}
 
-	state.process_dns_policy_error = false;
+	pbr.process_dns_policy_error = false;
 	output.verbose("Routing '" + name + "' DNS to " + dest_dns + ':' + dest_dns_port + ' ');
 
 	if (!src_addr) {
-		push(status.errors, { code: 'errorPolicyNoSrcDest', info: name });
+		push(pbr.errors, { code: 'errorPolicyNoSrcDest', info: name });
 		output.verbose_fail(); return 1;
 	}
 	if (!dest_dns) {
-		push(status.errors, { code: 'errorPolicyNoDns', info: name });
+		push(pbr.errors, { code: 'errorPolicyNoDns', info: name });
 		output.verbose_fail(); return 1;
 	}
 
@@ -2305,40 +2362,40 @@ function dns_policy_process(uid, enabled, name, src_addr, dest_dns, dest_dns_por
 		if (src_addr && filtered) {
 			if (str_contains(fg, 'ipv4') && !dest_dns_ipv4) continue;
 			if (str_contains(fg, 'ipv6') && !dest_dns_ipv6) continue;
-			dns_policy_routing(name, filtered, dest_dns, uid, dest_dns_port, dest_dns_ipv4, dest_dns_ipv6);
+			pbr.dns_policy.routing(name, filtered, dest_dns, uid, dest_dns_port, dest_dns_ipv4, dest_dns_ipv6);
 		}
 	}
 
-	if (state.process_dns_policy_error) output.verbose_fail();
+	if (pbr.process_dns_policy_error) output.verbose_fail();
 	else output.verbose_ok();
-}
+};
 
 // ── Policy Process ──────────────────────────────────────────────────
 
-function policy_process(uid, enabled, name, interface_name, src_addr, src_port, dest_addr, dest_port, proto, chain) { // ucode-lsp disable
+pbr.policy.process = function(uid, enabled, name, interface_name, src_addr, src_port, dest_addr, dest_port, proto, chain) { // ucode-lsp disable
 	if (enabled != '1') return 0;
 
-	src_addr = replace(src_addr, /[,;{}]/g, ' ');
+	src_addr = replace(src_addr, /[,;{};]/g, ' ');
 	src_port = replace(src_port, /[,;{}]/g, ' ');
 	dest_addr = replace(dest_addr, /[,;{}]/g, ' ');
 	dest_port = replace(dest_port, /[,;{}]/g, ' ');
 
-	state.process_policy_error = false;
+	pbr.process_policy_error = false;
 	proto = lc(proto || '');
 	if (proto == 'auto' || proto == 'all') proto = '';
 
 	output.verbose("Routing '" + name + "' via " + interface_name + ' ');
 
 	if (!src_addr && !src_port && !dest_addr && !dest_port) {
-		push(status.errors, { code: 'errorPolicyNoSrcDest', info: name });
+		push(pbr.errors, { code: 'errorPolicyNoSrcDest', info: name });
 		output.verbose_fail(); return 1;
 	}
 	if (!interface_name) {
-		push(status.errors, { code: 'errorPolicyNoInterface', info: name });
+		push(pbr.errors, { code: 'errorPolicyNoInterface', info: name });
 		output.verbose_fail(); return 1;
 	}
 	if (!is_supported_interface(interface_name)) {
-		push(status.errors, { code: 'errorPolicyUnknownInterface', info: name });
+		push(pbr.errors, { code: 'errorPolicyUnknownInterface', info: name });
 		output.verbose_fail(); return 1;
 	}
 
@@ -2374,7 +2431,7 @@ function policy_process(uid, enabled, name, interface_name, src_addr, src_port, 
 				if (!dest_addr || (dest_addr && fv_dest)) {
 					if (str_contains(fg_src, 'ipv4') && str_contains(fg_dest, 'ipv6')) continue;
 					if (str_contains(fg_src, 'ipv6') && str_contains(fg_dest, 'ipv4')) continue;
-					policy_routing(name, interface_name, fv_src, src_port, fv_dest, dest_port, proto, chain, uid);
+					pbr.policy.routing(name, interface_name, fv_src, src_port, fv_dest, dest_port, proto, chain, uid);
 					processed_src += (processed_src ? ' ' : '') + (fv_src || '');
 					processed_dest += (processed_dest ? ' ' : '') + (fv_dest || '');
 				}
@@ -2384,31 +2441,31 @@ function policy_process(uid, enabled, name, interface_name, src_addr, src_port, 
 
 	for (let i in split(src_addr || '', /\s+/)) {
 		if (i && !str_contains(processed_src, i)) {
-			state.process_policy_error = true;
-			push(status.errors, { code: 'errorPolicyProcessUnknownEntry', info: name + ': ' + i });
+			pbr.process_policy_error = true;
+			push(pbr.errors, { code: 'errorPolicyProcessUnknownEntry', info: name + ': ' + i });
 		}
 	}
 	for (let i in split(dest_addr || '', /\s+/)) {
 		if (i && !str_contains(processed_dest, i)) {
-			state.process_policy_error = true;
-			push(status.errors, { code: 'errorPolicyProcessUnknownEntry', info: name + ': ' + i });
+			pbr.process_policy_error = true;
+			push(pbr.errors, { code: 'errorPolicyProcessUnknownEntry', info: name + ': ' + i });
 		}
 	}
 
-	if (state.process_policy_error) output.verbose_fail();
+	if (pbr.process_policy_error) output.verbose_fail();
 	else output.verbose_ok();
-}
+};
 
 // ── Interface Routing ───────────────────────────────────────────────
 
-function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, priority) {
+pbr.interface.routing = function(action, tid, mark, iface, gw4, dev4, gw6, dev6, priority) {
 	let s = 0, ipv4_error = 1, ipv6_error = 1;
 	let nft_table = pkg.nft_table;
 	let nft_prefix = pkg.nft_prefix;
-	let rule_params = state.nft_rule_params ? ' ' + state.nft_rule_params : '';
+	let rule_params = pbr.nft_rule_params ? ' ' + pbr.nft_rule_params : '';
 
 	if (!tid || !mark || !iface) {
-		push(status.errors, { code: 'errorInterfaceRoutingEmptyValues' });
+		push(pbr.errors, { code: 'errorInterfaceRoutingEmptyValues' });
 		return 1;
 	}
 
@@ -2448,12 +2505,12 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 					ipv4_error = 1;
 			}
 
-			let idata = status.get_interface(iface);
+			let idata = pbr.get_interface(iface);
 			let chain_name = idata.chain_name;
 
-			if (!state._mark_chains_created?.[mark]) {
-				if (!state._mark_chains_created) state._mark_chains_created = {};
-				state._mark_chains_created[mark] = true;
+			if (!pbr._mark_chains_created?.[mark]) {
+				if (!pbr._mark_chains_created) pbr._mark_chains_created = {};
+				pbr._mark_chains_created[mark] = true;
 				nft_add('add chain inet ' + nft_table + ' ' + chain_name);
 				nft_add('add rule inet ' + nft_table + ' ' + chain_name + rule_params +
 					' meta mark set (meta mark & ' + cfg.fw_maskXor + ') | ' + mark);
@@ -2487,7 +2544,7 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 						else if (index(addr_info, 'POINTOPOINT') >= 0)
 							ipv6_error = try_cmd(pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
 						else
-							push(status.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
+							push(pbr.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
 					} else {
 						let dev6_out = shell(pkg.ip_full + ' -6 -o a show ' + shell_quote(dev6));
 						let dev6_m = match(dev6_out, /\s+inet6\s+(\S+)/);
@@ -2501,12 +2558,12 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 					ipv6_error = 1;
 			}
 
-			let idata6 = status.get_interface(iface);
+			let idata6 = pbr.get_interface(iface);
 			let chain_name6 = idata6.chain_name;
 
-			if (!state._mark_chains_created?.[mark]) {
-				if (!state._mark_chains_created) state._mark_chains_created = {};
-				state._mark_chains_created[mark] = true;
+			if (!pbr._mark_chains_created?.[mark]) {
+				if (!pbr._mark_chains_created) pbr._mark_chains_created = {};
+				pbr._mark_chains_created[mark] = true;
 				nft_add('add chain inet ' + nft_table + ' ' + chain_name6);
 				nft_add('add rule inet ' + nft_table + ' ' + chain_name6 + rule_params +
 					' meta mark set (meta mark & ' + cfg.fw_maskXor + ') | ' + mark);
@@ -2589,7 +2646,7 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 						else if (index(addr_info, 'POINTOPOINT') >= 0)
 							ipv6_error = try_cmd(pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
 						else
-							push(status.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
+							push(pbr.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
 					} else {
 						let dev6_out = shell(pkg.ip_full + ' -6 -o a show ' + shell_quote(dev6));
 						let dev6_m = match(dev6_out, /\s+inet6\s+(\S+)/);
@@ -2607,13 +2664,13 @@ function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, prior
 	}
 	}
 	return s;
-}
+};
 
 // ── Enumerate Interfaces ────────────────────────────────────────────
 // Single pass: assigns mark/priority/device to each supported interface.
 // Must run after env.load_config() and env.load().
 
-function enumerate_interfaces() {
+pbr.interface.enumerate = function() {
 	uci_ctx('network', true);
 
 	let iface_mark = sprintf('0x%06x', hex(cfg.uplink_mark));
@@ -2621,14 +2678,14 @@ function enumerate_interfaces() {
 	let _uplink_mark = '';
 	let _uplink_priority = '';
 
-	state.ifaces_triggers = '';
+	pbr.ifaces_triggers = '';
 
 	uci_ctx('network').foreach('network', 'interface', function(s) {
 		let iface = s['.name'];
 
 		if (!is_supported_interface(iface)) return;
 		if (hex(iface_mark) > hex(cfg.fw_mask)) {
-			push(status.errors, { code: 'errorInterfaceMarkOverflow', info: iface });
+			push(pbr.errors, { code: 'errorInterfaceMarkOverflow', info: iface });
 			return;
 		}
 
@@ -2665,7 +2722,7 @@ function enumerate_interfaces() {
 			}
 		}
 
-		status.set_interface(iface, {
+		pbr.set_interface(iface, {
 			mark: _mark, priority: _priority,
 			chain_name: _chain_name,
 			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
@@ -2674,7 +2731,7 @@ function enumerate_interfaces() {
 		});
 
 		if (!is_netifd_interface(iface) && !is_mwan4_interface(iface))
-			state.ifaces_triggers += (state.ifaces_triggers ? ' ' : '') + iface;
+			pbr.ifaces_triggers += (pbr.ifaces_triggers ? ' ' : '') + iface;
 
 		if (!split_uplink_second) {
 			iface_mark = sprintf('0x%06x', hex(iface_mark) + hex(cfg.uplink_mark));
@@ -2683,29 +2740,29 @@ function enumerate_interfaces() {
 	});
 
 	// Store post-enumeration priority for create_global_rules
-	state.iface_priority = iface_priority;
-}
+	pbr.iface_priority = iface_priority;
+};
 
 // ── Resolve TID ─────────────────────────────────────────────────────
 // Looks up existing rt_tables entry, falls back to split-uplink partner,
 // then to next available ID.
 
-function resolve_tid(iface) {
+pbr.interface.resolve_tid = function(iface) {
 	let tid = get_rt_tables_id(iface);
 	if (!tid && is_split_uplink() && (is_uplink4(iface) || is_uplink6(iface))) {
 		let other = is_uplink4(iface) ? cfg.uplink_interface6 : cfg.uplink_interface4;
-		let other_data = status.get_interface(other);
+		let other_data = pbr.get_interface(other);
 		if (other_data?.tid) tid = other_data.tid;
 	}
 	if (!tid) tid = get_rt_tables_next_id();
 	return tid;
-}
+};
 
 // ── Process Interface ───────────────────────────────────────────────
 // Performs actions on interfaces using pre-computed properties from
-// enumerate_interfaces(). TIDs are resolved lazily per action.
+// pbr.interface.enumerate(). TIDs are resolved lazily per action.
 
-function process_interface(iface, action, reloaded_iface) {
+pbr.interface.process = function(iface, action, reloaded_iface) {
 	let _get_tor_dns_port = function() {
 		let content = readfile(pkg.tor_config_file);
 		if (type(content) != 'string' || !content) return '9053';
@@ -2734,7 +2791,7 @@ function process_interface(iface, action, reloaded_iface) {
 					if (disabled != '1' && listen_port) {
 						if (cfg.uplink_interface4) {
 							let tbl = pkg.ip_table_prefix + '_' + cfg.uplink_interface4;
-							let prio = '' + state.iface_priority;
+							let prio = '' + pbr.iface_priority;
 							system(pkg.ip_full + ' -4 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
 							ip('-4', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
 							if (cfg.ipv6_enabled) {
@@ -2766,7 +2823,7 @@ function process_interface(iface, action, reloaded_iface) {
 		case 'create': case 'reload': case 'reload_interface':
 			env.tor_dns_port = _get_tor_dns_port();
 			env.tor_traffic_port = _get_tor_traffic_port();
-			status.set_interface('tor', {
+			pbr.set_interface('tor', {
 				device_ipv4: '', device_ipv6: '',
 				gateway_ipv4: '53->' + env.tor_dns_port,
 				gateway_ipv6: '80,443->' + env.tor_traffic_port,
@@ -2786,8 +2843,8 @@ function process_interface(iface, action, reloaded_iface) {
 		}
 	}
 
-	// Look up pre-computed properties from enumerate_interfaces()
-	let existing = status.get_interface(iface);
+	// Look up pre-computed properties from pbr.interface.enumerate()
+	let existing = pbr.get_interface(iface);
 	if (!existing) return 0;
 
 	let _mark = existing.mark;
@@ -2798,7 +2855,7 @@ function process_interface(iface, action, reloaded_iface) {
 
 	switch (action) {
 	case 'create': {
-		let _tid = resolve_tid(iface);
+		let _tid = pbr.interface.resolve_tid(iface);
 		gw4 = pbr_get_gateway4(iface, dev4);
 		gw6 = pbr_get_gateway6(iface, dev6);
 		let dg4 = gw4 || '0.0.0.0';
@@ -2815,8 +2872,8 @@ function process_interface(iface, action, reloaded_iface) {
 			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
 		display_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
 		output.verbose("Setting up routing for '" + display_text + "' ");
-		if (interface_routing('create', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
-			status.set_interface(iface, {
+		if (pbr.interface.routing('create', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
+			pbr.set_interface(iface, {
 				tid: _tid, mark: _mark, priority: _priority,
 				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
@@ -2827,24 +2884,24 @@ function process_interface(iface, action, reloaded_iface) {
 			if (is_netifd_interface(iface)) output.verbose_okb();
 			else output.verbose_ok();
 		} else {
-			push(status.errors, { code: 'errorFailedSetup', info: display_text });
+			push(pbr.errors, { code: 'errorFailedSetup', info: display_text });
 			output.verbose_fail();
 		}
 		break;
 	}
 
 	case 'create_user_set': {
-		let _tid = resolve_tid(iface);
+		let _tid = pbr.interface.resolve_tid(iface);
 		if (is_split_uplink()) {
 			if (is_uplink4(iface)) dev6 = '';
 			else if (is_uplink6(iface)) dev4 = '';
 		}
-		interface_routing('create_user_set', _tid, _mark, iface, '', dev4, '', dev6, _priority);
+		pbr.interface.routing('create_user_set', _tid, _mark, iface, '', dev4, '', dev6, _priority);
 		break;
 	}
 
 	case 'destroy': {
-		let _tid = resolve_tid(iface);
+		let _tid = pbr.interface.resolve_tid(iface);
 		if (is_split_uplink()) {
 			if (is_uplink4(iface)) dev6 = '';
 			else if (is_uplink6(iface)) dev4 = '';
@@ -2852,14 +2909,14 @@ function process_interface(iface, action, reloaded_iface) {
 		disp_dev = (iface != dev4) ? dev4 : '';
 		display_text = iface + '/' + (disp_dev ? disp_dev : '');
 		output.verbose("Removing routing for '" + display_text + "' ");
-		interface_routing('destroy', _tid, _mark, iface, '', dev4, '', dev6, _priority);
+		pbr.interface.routing('destroy', _tid, _mark, iface, '', dev4, '', dev6, _priority);
 		if (is_netifd_interface(iface)) output.verbose_okb();
 		else output.verbose_ok();
 		break;
 	}
 
 	case 'reload': {
-		let _tid = resolve_tid(iface);
+		let _tid = pbr.interface.resolve_tid(iface);
 		gw4 = pbr_get_gateway4(iface, dev4);
 		gw6 = pbr_get_gateway6(iface, dev6);
 		if (is_split_uplink()) {
@@ -2872,7 +2929,7 @@ function process_interface(iface, action, reloaded_iface) {
 			disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
 		if (is_netifd_interface_default(iface))
 			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
-		status.set_interface(iface, {
+		pbr.set_interface(iface, {
 			tid: _tid, mark: _mark, priority: _priority,
 			chain_name: existing.chain_name,
 			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
@@ -2884,7 +2941,7 @@ function process_interface(iface, action, reloaded_iface) {
 	}
 
 	case 'reload_interface': {
-		let _tid = resolve_tid(iface);
+		let _tid = pbr.interface.resolve_tid(iface);
 		gw4 = pbr_get_gateway4(iface, dev4);
 		gw6 = pbr_get_gateway6(iface, dev6);
 		if (is_split_uplink()) {
@@ -2900,8 +2957,8 @@ function process_interface(iface, action, reloaded_iface) {
 		if (iface == reloaded_iface) {
 			let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + (gw4 || '0.0.0.0') + (cfg.ipv6_enabled ? '/' + (gw6 || '::/0') : '');
 			output.verbose("Reloading routing for '" + ri_text + "' ");
-			if (interface_routing('reload_interface', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
-				status.set_interface(iface, {
+			if (pbr.interface.routing('reload_interface', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
+				pbr.set_interface(iface, {
 					tid: _tid, mark: _mark, priority: _priority,
 					chain_name: existing.chain_name,
 					device_ipv4: dev4 || '', device_ipv6: dev6 || '',
@@ -2912,11 +2969,11 @@ function process_interface(iface, action, reloaded_iface) {
 				if (is_netifd_interface(iface)) output.verbose_okb();
 				else output.verbose_ok();
 			} else {
-				push(status.errors, { code: 'errorFailedReload', info: ri_text });
+				push(pbr.errors, { code: 'errorFailedReload', info: ri_text });
 				output.verbose_fail();
 			}
 		} else {
-			status.set_interface(iface, {
+			pbr.set_interface(iface, {
 				tid: _tid, mark: _mark, priority: _priority,
 				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
@@ -2930,11 +2987,11 @@ function process_interface(iface, action, reloaded_iface) {
 	}
 
 	return s;
-}
+};
 
 // ── User File Process ───────────────────────────────────────────────
 
-function user_file_process(enabled, path) {
+pbr.user_file.process = function(enabled, path) {
 	let _is_bad_user_file_nft_call = function(filepath) {
 		let content = readfile(filepath) || '';
 		return index(content, '"$nft" list') >= 0 || index(content, '"$nft" -f') >= 0;
@@ -2942,12 +2999,12 @@ function user_file_process(enabled, path) {
 
 	let _user_file_process_sh = function(path) {
 		if (sys('/bin/sh -n ' + shell_quote(path)) != 0) {
-			push(status.errors, { code: 'errorUserFileSyntax', info: path });
+			push(pbr.errors, { code: 'errorUserFileSyntax', info: path });
 			output.info_fail();
 			return 1;
 		}
 		if (_is_bad_user_file_nft_call(path)) {
-			push(status.errors, { code: 'errorIncompatibleUserFile', info: path });
+			push(pbr.errors, { code: 'errorIncompatibleUserFile', info: path });
 			output.info_fail();
 			return 1;
 		}
@@ -2963,15 +3020,15 @@ function user_file_process(enabled, path) {
 		// Read captured nft commands and add to accumulator
 		let captured = readfile(nft_capture) || '';
 		for (let line in split(captured, '\n')) {
-			if (line) push(nft_lines, line);
+			if (line) push(pbr.nft_lines, line);
 		}
 		unlink(nft_capture);
 		unlink(wrapper_path);
 		if (rc != 0) {
-			push(status.errors, { code: 'errorUserFileRunning', info: path });
+			push(pbr.errors, { code: 'errorUserFileRunning', info: path });
 			let content = readfile(path) || '';
 			if (index(content, 'curl') >= 0 && !is_present('curl'))
-				push(status.errors, { code: 'errorUserFileNoCurl', info: path });
+				push(pbr.errors, { code: 'errorUserFileNoCurl', info: path });
 			output.verbose_fail();
 			return 1;
 		}
@@ -3018,7 +3075,7 @@ function user_file_process(enabled, path) {
 				return content || null;
 			},
 			get_target_chain: function(iface) {
-				let data = status.get_interface(iface);
+				let data = pbr.get_interface(iface);
 				if (!data) return null;
 				if (is_mwan4_strategy(iface))
 					return data.strategy_name ? ('mwan4_strategy_' + data.strategy_name) : null;
@@ -3027,19 +3084,19 @@ function user_file_process(enabled, path) {
 		};
 		let code = readfile(path);
 		if (!code) {
-			push(status.errors, { code: 'errorUserFileRunning', info: path });
+			push(pbr.errors, { code: 'errorUserFileRunning', info: path });
 			output.verbose_fail();
 			return 1;
 		}
 		let fn = loadstring('' + code);
 		if (!fn) {
-			push(status.errors, { code: 'errorUserFileSyntax', info: path });
+			push(pbr.errors, { code: 'errorUserFileSyntax', info: path });
 			output.verbose_fail();
 			return 1;
 		}
 		let result;
 		try { result = fn(); } catch (e) {
-			push(status.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
+			push(pbr.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
 			output.verbose_fail();
 			return 1;
 		}
@@ -3050,24 +3107,24 @@ function user_file_process(enabled, path) {
 			else if (type(result) == 'object' && type(result?.run) == 'function')
 				result.run(api);
 		} catch (e) {
-			push(status.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
+			push(pbr.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
 			output.verbose_fail();
 			return 1;
 		}
 		if (_unsafe) {
-			push(status.errors, { code: 'errorUserFileUnsafeNft', info: path });
+			push(pbr.errors, { code: 'errorUserFileUnsafeNft', info: path });
 			output.verbose_fail();
 			return 1;
 		}
 		for (let line in _pending)
-			push(nft_lines, line);
+			push(pbr.nft_lines, line);
 		output.verbose_ok();
 		return 0;
 	};
 
 	if (enabled != '1' && enabled != 1) return 0;
 	if (!stat(path) || stat(path).size == 0) {
-		push(status.errors, { code: 'errorUserFileNotFound', info: path });
+		push(pbr.errors, { code: 'errorUserFileNotFound', info: path });
 		output.info_fail();
 		return 1;
 	}
@@ -3075,13 +3132,13 @@ function user_file_process(enabled, path) {
 		return _user_file_process_uc(path);
 	else
 		return _user_file_process_sh(path);
-}
+};
 
 // ── Netifd Integration ──────────────────────────────────────────────
 
-function netifd(action, target_iface) {
+pbr.netifd = function(action, target_iface) {
 	env.load('netifd');
-	status.reset();
+	pbr.reset();
 	action = action || 'install';
 
 	if (action == 'check')
@@ -3089,28 +3146,28 @@ function netifd(action, target_iface) {
 
 	if (action == 'install') {
 		if (!cfg.netifd_strict_enforcement) {
-			push(status.errors, { code: 'errorNetifdMissingOption', info: 'netifd_strict_enforcement' });
+			push(pbr.errors, { code: 'errorNetifdMissingOption', info: 'netifd_strict_enforcement' });
 			output.error(get_text('errorNetifdMissingOption', 'netifd_strict_enforcement'));
 			return false;
 		}
 		if (!cfg.netifd_interface_default) {
-			push(status.errors, { code: 'errorNetifdMissingOption', info: 'netifd_interface_default' });
+			push(pbr.errors, { code: 'errorNetifdMissingOption', info: 'netifd_interface_default' });
 			output.error(get_text('errorNetifdMissingOption', 'netifd_interface_default'));
 			return false;
 		}
 		let net_ctx = uci_ctx('network', true);
 		if (net_ctx.get('network', cfg.netifd_interface_default, '.type') != 'interface') {
-			push(status.errors, { code: 'errorNetifdInvalidGateway4', info: cfg.netifd_interface_default });
+			push(pbr.errors, { code: 'errorNetifdInvalidGateway4', info: cfg.netifd_interface_default });
 			output.error(get_text('errorNetifdInvalidGateway4', cfg.netifd_interface_default));
 			return false;
 		}
 		if (cfg.netifd_interface_default6 && net_ctx.get('network', cfg.netifd_interface_default6, '.type') != 'interface') {
-			push(status.errors, { code: 'errorNetifdInvalidGateway6', info: cfg.netifd_interface_default6 });
+			push(pbr.errors, { code: 'errorNetifdInvalidGateway6', info: cfg.netifd_interface_default6 });
 			output.error(get_text('errorNetifdInvalidGateway6', cfg.netifd_interface_default6));
 			return false;
 		}
 		if (!cfg.netifd_interface_local) {
-			push(status.warnings, { code: 'warningNetifdMissingInterfaceLocal', info: 'lan' });
+			push(pbr.warnings, { code: 'warningNetifdMissingInterfaceLocal', info: 'lan' });
 			output.warning(get_text('warningNetifdMissingInterfaceLocal', 'lan'));
 			cfg.netifd_interface_local = 'lan';
 		}
@@ -3123,9 +3180,9 @@ function netifd(action, target_iface) {
 	let _uplinkMark, _uplinkPriority, _uplinkTableID;
 	let nft_table = pkg.nft_table;
 	let nft_prefix = pkg.nft_prefix;
-	let rule_params = state.nft_rule_params ? ' ' + state.nft_rule_params : '';
+	let rule_params = pbr.nft_rule_params ? ' ' + pbr.nft_rule_params : '';
 
-	nft_file('create', 'netifd');
+	pbr.nft_file.init('netifd');
 	output.info('Netifd extensions ' + action + (target_iface ? ' on ' + target_iface : '') + ' ');
 
 	// Remove existing rules
@@ -3223,9 +3280,9 @@ function netifd(action, target_iface) {
 						push(lines, _tid + ' ' + rt_name);
 						writefile(pkg.rt_tables_file, join('\n', lines) + '\n');
 					}
-					nft_file('filter', 'temp', _mark);
+					pbr.nft_file.filter('temp', _mark);
 				}
-				if (!nft_file('match', 'temp', nft_prefix + '_mark_' + _mark)) {
+				if (!pbr.nft_file.match('temp', nft_prefix + '_mark_' + _mark)) {
 					nft_add('define ' + nft_prefix + '_' + iface + '_mark = ' + _mark);
 					nft_add('add chain inet ' + nft_table + ' ' + nft_prefix + '_mark_' + _mark);
 					nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_mark_' + _mark + rule_params +
@@ -3257,7 +3314,7 @@ function netifd(action, target_iface) {
 					let lines = filter(split(rt, '\n'), l => index(l, rt_name) < 0);
 					writefile(pkg.rt_tables_file, join('\n', lines) + '\n');
 				}
-				nft_file('sed', 'netifd', "'/" + _mark + "/d'");
+				pbr.nft_file.sed('netifd', "'/" + _mark + "/d'");
 				output.verbose_okb();
 			}
 		}
@@ -3273,19 +3330,19 @@ function netifd(action, target_iface) {
 
 	switch (action) {
 	case 'install':
-		nft_file('install', 'netifd');
+		pbr.nft_file.apply('netifd');
 		if (!target_iface)
 			uci_ctx(pkg.name).set(pkg.name, 'config', 'netifd_enabled', '1');
 		break;
 	case 'remove':
 		if (!target_iface) {
-			nft_file('delete', 'netifd');
+			pbr.nft_file.remove('netifd');
 			uci_ctx(pkg.name).delete(pkg.name, 'config', 'netifd_enabled');
 		}
 		break;
 	case 'uninstall':
 		if (!target_iface)
-			nft_file('delete', 'netifd');
+			pbr.nft_file.remove('netifd');
 		break;
 	}
 
@@ -3300,18 +3357,18 @@ function netifd(action, target_iface) {
 		output.failn();
 
 	return true;
-}
+};
 
 // ── start ───────────────────────────────────────────────────────────
 
-function start_service(args) {
+pbr.start_service = function(args) {
 	let param = (args && args[0]) || 'on_start';
 	let reloaded_iface = (args && args[1]) || null;
 
 	// on_boot is handled entirely in shell; nothing to do here
 	if (param == 'on_boot') return null;
 
-	status.reset();
+	pbr.reset();
 	if (!env.load(param)) {
 		return null;
 	}
@@ -3322,7 +3379,11 @@ function start_service(args) {
 		return null;
 	}
 
-	enumerate_interfaces();
+	let start_time, end_time;
+	start_time = time();
+	pbr.interface.enumerate();
+	end_time = time();
+	logger_debug('[PERF-DEBUG] Enumerating interfaces took ' + (end_time - start_time) + 's');
 
 	// Determine trigger
 	let service_start_trigger;
@@ -3363,71 +3424,84 @@ function start_service(args) {
 		reloaded_iface = null;
 	}
 
-	state.service_start_trigger = service_start_trigger;
+	pbr.service_start_trigger = service_start_trigger;
 
 	switch (service_start_trigger) {
 	case 'on_interface_reload':
 		output.okn();
 		output.info('Reloading Interface: ' + reloaded_iface + ' ');
+		start_time = time();
 		uci_ctx('network').foreach('network', 'interface', function(s) {
-			process_interface(s['.name'], 'reload_interface', reloaded_iface);
+			pbr.interface.process(s['.name'], 'reload_interface', reloaded_iface);
 		});
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Reloading interface ' + reloaded_iface + ' took ' + (end_time - start_time) + 's');
 		output.newline1();
 		break;
 
 	default: // on_reload, on_start, etc.
-		resolver('store_hash');
-		resolver('configure');
-		cleanup('main_table', 'rt_tables', 'main_chains', 'sets');
-		nft_file('create', 'main');
+		pbr.resolver('store_hash');
+		pbr.resolver('configure');
+		pbr.cleanup('main_table', 'rt_tables', 'main_chains', 'sets');
+		pbr.nft_file.init('main');
 		output.okn();
 
 		output.info('Processing interfaces ');
+		start_time = time();
 		uci_ctx('network').foreach('network', 'interface', function(s) {
-			process_interface(s['.name'], 'create');
+			pbr.interface.process(s['.name'], 'create');
 		});
-		process_interface('tor', 'destroy');
-		if (is_tor_running()) process_interface('tor', 'create');
-		process_interface('all', 'create_global_rules');
+		pbr.interface.process('tor', 'destroy');
+		if (is_tor_running()) pbr.interface.process('tor', 'create');
+		pbr.interface.process('all', 'create_global_rules');
 		sys(pkg.ip_full + ' route flush cache');
-//		push(status.warnings, { code: 'warningDynamicRoutingMode' });
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Processing interfaces took ' + (end_time - start_time) + 's');
+//		push(pbr.warnings, { code: 'warningDynamicRoutingMode' });
 		output.newline1();
 
 		// Process policies (common for all modes)
 		if (is_config_enabled('policy')) {
 			output.info('Processing policies ');
+			start_time = time();
 			let uid_counter = 0;
 			uci_ctx(pkg.name, true).foreach(pkg.name, 'policy', function(s) {
 				uid_counter++;
 				let p = parse_options(s, policy_schema);
-				policy_process('' + uid_counter,
+				pbr.policy.process('' + uid_counter,
 					p.enabled, p.name, p.interface, p.src_addr, p.src_port,
 					p.dest_addr, p.dest_port, p.proto, p.chain);
 			});
+			end_time = time();
+			logger_debug('[PERF-DEBUG] Processing policies took ' + (end_time - start_time) + 's');
 			output.newline1();
 		}
 
 		// Process DNS policies (common for all modes)
 		if (is_config_enabled('dns_policy')) {
 			output.info('Processing dns policies ');
+			start_time = time();
 			let uid_counter = 0;
 			uci_ctx(pkg.name, true).foreach(pkg.name, 'dns_policy', function(s) {
 				uid_counter++;
 				let p = parse_options(s, dns_policy_schema);
-				dns_policy_process('' + uid_counter,
+				pbr.dns_policy.process('' + uid_counter,
 					p.enabled, p.name, p.src_addr, p.dest_dns, p.dest_dns_port);
 			});
+			end_time = time();
+			logger_debug('[PERF-DEBUG] Processing DNS policies took ' + (end_time - start_time) + 's');
 			output.newline1();
 		}
 
 		// Process user files (common for all modes)
 		if (is_config_enabled('include') || stat('/etc/' + pkg.name + '.d/')?.type == 'directory') {
 			uci_ctx('network').foreach('network', 'interface', function(s) {
-				process_interface(s['.name'], 'create_user_set');
+				pbr.interface.process(s['.name'], 'create_user_set');
 			});
 			output.info('Processing user file(s) ');
+			start_time = time();
 			uci_ctx(pkg.name, true).foreach(pkg.name, 'include', function(s) {
-				user_file_process(s.enabled, s.path);
+				pbr.user_file.process(s.enabled, s.path);
 			});
 			let user_dir = '/etc/' + pkg.name + '.d/';
 			if (stat(user_dir)?.type == 'directory') {
@@ -3435,20 +3509,25 @@ function start_service(args) {
 				for (let f in files) {
 					let fp = user_dir + f;
 					if (stat(fp)?.type == 'file')
-						user_file_process('1', fp);
+						pbr.user_file.process('1', fp);
 				}
 			}
+			end_time = time();
+			logger_debug('[PERF-DEBUG] Processing user files took ' + (end_time - start_time) + 's');
 			output.newline1();
 		}
 
-		nft_file('install', 'main');
+		start_time = time();
+		pbr.nft_file.apply('main');
+		end_time = time();
+		logger_debug('[PERF-DEBUG] Installing nft rules took ' + (end_time - start_time) + 's');
 		break;
 	}
 
 	let _build_gateway_summary = function() {
 		let lines = [];
-		for (let name in keys(status.interfaces)) {
-			let iface = status.interfaces[name];
+		for (let name in keys(pbr.interfaces)) {
+			let iface = pbr.interfaces[name];
 			if (!iface || iface.action == 'mwan4_strategy') continue;
 			let disp_dev = (name != iface.device_ipv4) ? iface.device_ipv4 : '';
 			let gw4 = iface.gateway_ipv4 || '0.0.0.0';
@@ -3462,8 +3541,8 @@ function start_service(args) {
 	};
 	let gw_summary = _build_gateway_summary();
 	let gateways = [];
-	for (let name in keys(status.interfaces)) {
-		let iface = status.interfaces[name];
+	for (let name in keys(pbr.interfaces)) {
+		let iface = pbr.interfaces[name];
 		if (iface.action == 'mwan4_strategy') continue;
 		push(gateways, {
 			name: name,
@@ -3483,8 +3562,8 @@ function start_service(args) {
 		version: pkg.version,
 		gateways: gateways,
 		status: {},
-		errors: status.errors,
-		warnings: status.warnings,
+		errors: pbr.errors,
+		warnings: pbr.warnings,
 		interfaces: env.webui_interfaces,
 		platform: {
 			nft_installed: env.nft_installed,
@@ -3493,46 +3572,46 @@ function start_service(args) {
 			unbound_installed: env.unbound_installed,
 			dnsmasq_nftset_support: env.dnsmasq_nftset_supported,
 		},
-		ifacesTriggers: state.ifaces_triggers,
+		ifacesTriggers: pbr.ifaces_triggers,
 	};
 	if (gw_summary)
 		result.status.gateways = gw_summary;
 	return result;
-}
+};
 
 // ── stop_service ────────────────────────────────────────────────────
 
-function stop_service() {
-	status.reset();
+pbr.stop_service = function() {
+	pbr.reset();
 	if (!is_service_running_nft() && get_rt_tables_next_id() == get_rt_tables_non_pbr_next_id())
 		return;
 
 	unlink(pkg.lock_file);
 	env.load('on_stop');
 	output.print('Resetting routing ');
-	let ok = nft_file('delete', 'main') && cleanup('main_table', 'rt_tables');
+	let ok = pbr.nft_file.remove('main') && pbr.cleanup('main_table', 'rt_tables');
 	sys(pkg.ip_full + ' route flush cache');
 	sys('fw4 -q reload');
 	if (ok) output.okn();
 	else output.failn();
 
 	output.print('Resetting resolver ');
-	if (resolver('store_hash') && resolver('cleanup'))
+	if (pbr.resolver('store_hash') && pbr.resolver('cleanup'))
 		output.okn();
 	else
 		output.failn();
 
-	if (resolver('compare_hash')) resolver('restart');
+	if (pbr.resolver('compare_hash')) pbr.resolver('restart');
 
 	if (cfg.enabled) {
 		output.print(pkg.service_name + ' stopped ');
 		output.okn();
 	}
-}
+};
 
 // ── service_started ─────────────────────────────────────────────────
 
-function service_started(param) {
+pbr.service_started = function(param) {
 	if (param == 'on_boot') return;
 
 	env.load('service_started');
@@ -3541,8 +3620,8 @@ function service_started(param) {
 	let svc_info = ubus_call('service', 'list', { name: pkg.name });
 	let svc_data = svc_info?.[pkg.name]?.instances?.main?.data;
 
-	if (nft_file('exists', 'main')) {
-		if (resolver('compare_hash')) resolver('restart');
+	if (pbr.nft_file.exists('main')) {
+		if (pbr.resolver('compare_hash')) pbr.resolver('restart');
 		let gw_summary = svc_data?.status?.gateways;
 		if (gw_summary)
 			output.print(pkg.service_name + ' started with gateways:\\n' + gw_summary + '\\n');
@@ -3556,21 +3635,21 @@ function service_started(param) {
 		output.warning(get_text(w.code, w.info));
 	}
 	if (length(warnings) > 0)
-		output.warning(get_text('warningSummary', pkg.url('#WarningMessagesDetails')));
+		output.warning(get_text('warningSummary', pkg.url('#warning-messages-details')));
 
 	let errors = svc_data?.errors || [];
 	for (let e in errors) {
 		output.error(get_text(e.code, e.info));
 	}
 	if (length(errors) > 0)
-		output.error(get_text('errorSummary', pkg.url('#ErrorMessagesDetails')));
+		output.error(get_text('errorSummary', pkg.url('#error-messages-details')));
 
 	writefile(pkg.lock_file, trim(shell('echo $$')));
-}
+};
 
 // ── emit_procd_shell ────────────────────────────────────────────────
 
-function emit_procd_shell(data) {
+pbr.emit_procd_shell = function(data) {
 	if (!data) return '';
 	let lines = [];
 
@@ -3642,11 +3721,11 @@ function emit_procd_shell(data) {
 		push(lines, '_pbr_ifaces_triggers=' + shell_quote(data.ifacesTriggers));
 
 	return join('\n', lines) + '\n';
-}
+};
 
 // ── Status Service ──────────────────────────────────────────────────
 
-function status_service(param) {
+pbr.status_service = function(param) {
 	env.load('status');
 
 	let board = ubus_call('system', 'board', {});
@@ -3679,14 +3758,14 @@ function status_service(param) {
 	printf('%s\n', _SEP_);
 	system("dnsmasq --version 2>/dev/null | sed '/^$/,$d'");
 
-	if (nft_file('exists', 'netifd')) {
+	if (pbr.nft_file.exists('netifd')) {
 		printf('%s\n', _SEP_);
-		let netifd_content = nft_file('show', 'netifd');
+		let netifd_content = pbr.nft_file.show('netifd');
 		if (netifd_content) printf('%s', netifd_content);
 	}
-	if (nft_file('exists', 'main')) {
+	if (pbr.nft_file.exists('main')) {
 		printf('%s\n', _SEP_);
-		let main_content = nft_file('show', 'main');
+		let main_content = pbr.nft_file.show('main');
 		if (main_content) printf('%s', main_content);
 	}
 
@@ -3751,11 +3830,11 @@ function status_service(param) {
 		}
 		printf('%s\n', _SEP_);
 	}
-}
+};
 
 // ── Support ─────────────────────────────────────────────────────────
 
-function support() {
+pbr.support = function() {
 	printf('Setting counters and verbosity for diagnostics...\n');
 	let ctx = uci_ctx(pkg.name);
 	ctx.set(pkg.name, 'config', 'nft_rule_counter', '1');
@@ -3784,20 +3863,20 @@ function support() {
 	system('/etc/init.d/pbr restart');
 	printf('\n===== /etc/init.d/pbr status (after restart) =====\n');
 	system('/etc/init.d/pbr status');
-}
+};
 
 // ── rpcd Data Functions ─────────────────────────────────────────────
 
-function get_init_list(name) {
+pbr.get_init_list = function(name) {
 	name = name || pkg.name;
 	env.load('rpcd');
 	let result = {};
 	let enabled = uci_ctx(pkg.name).get(pkg.name, 'config', 'enabled') || '0';
 	result[name] = { enabled: (enabled == '1') };
 	return result;
-}
+};
 
-function get_init_status(name) {
+pbr.get_init_status = function(name) {
 	name = name || pkg.name;
 	env.load('status');
 
@@ -3831,9 +3910,9 @@ function get_init_status(name) {
 		},
 	};
 	return result;
-}
+};
 
-get_platform_support = function(name) {
+pbr.get_platform_support = function(name) {
 	name = name || pkg.name;
 	env.load('rpcd');
 	let result = {};
@@ -3847,7 +3926,7 @@ get_platform_support = function(name) {
 	return result;
 };
 
-get_supported_interfaces = function(name) {
+pbr.get_supported_interfaces = function(name) {
 	name = name || pkg.name;
 	env.load('rpcd');
 	let result = {};
@@ -3859,25 +3938,15 @@ get_supported_interfaces = function(name) {
 
 export default {
 	pkg,
-
-	// Core lifecycle
-	start_service,
-	stop_service,
-	status_service,
-
-	// Netifd
-	netifd,
-
-	// Extra commands
-	support,
-
-	// rpcd data
-	get_init_status,
-	get_init_list,
-	get_platform_support,
-	get_supported_interfaces,
-
-	// init script helpers
-	service_started,
-	emit_procd_shell,
+	start_service:            pbr.start_service,
+	stop_service:             pbr.stop_service,
+	status_service:           pbr.status_service,
+	netifd:                   pbr.netifd,
+	support:                  pbr.support,
+	get_init_status:          pbr.get_init_status,
+	get_init_list:            pbr.get_init_list,
+	get_platform_support:     pbr.get_platform_support,
+	get_supported_interfaces: pbr.get_supported_interfaces,
+	service_started:          pbr.service_started,
+	emit_procd_shell:         pbr.emit_procd_shell,
 };
