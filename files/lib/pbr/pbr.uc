@@ -2041,8 +2041,17 @@ function classify_addr(value, direction, iface, uid, name, use_resolver) {
 			param6 = pkg.nft_ipv6_flag + ' ' + addr_dir + ' ' + negation + '{ ' + is6 + ' }';
 		}
 	} else {
-		param4 = pkg.nft_ipv4_flag + ' ' + addr_dir + ' ' + negation + '{ ' + inline_set(value) + ' }';
-		param6 = pkg.nft_ipv6_flag + ' ' + addr_dir + ' ' + negation + '{ ' + inline_set(value) + ' }';
+		let is4 = '', is6 = '';
+		for (let v in split(value, /\s+/)) {
+			if (!v) continue;
+			let clean = replace(v, /^!/, '');
+			if (is_ipv4(clean)) is4 += (is4 ? ' ' : '') + v;
+			else is6 += (is6 ? ' ' : '') + v;
+		}
+		if (!is4) empty4 = true;
+		if (!is6) empty6 = true;
+		param4 = pkg.nft_ipv4_flag + ' ' + addr_dir + ' ' + negation + '{ ' + inline_set(is4) + ' }';
+		param6 = pkg.nft_ipv6_flag + ' ' + addr_dir + ' ' + negation + '{ ' + inline_set(is6) + ' }';
 	}
 
 	return { param4, param6, empty4, empty6 };
@@ -2858,12 +2867,12 @@ pbr.interface.process = function(iface, action, reloaded_iface) {
 		let _tid = pbr.interface.resolve_tid(iface);
 		gw4 = pbr_get_gateway4(iface, dev4);
 		gw6 = pbr_get_gateway6(iface, dev6);
-		let dg4 = gw4 || '0.0.0.0';
-		let dg6 = gw6 || '::/0';
 		if (is_split_uplink()) {
 			if (is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
 		}
+		let dg4 = gw4 || '0.0.0.0';
+		let dg6 = gw6 || '::/0';
 		disp_dev = (iface != dev4) ? dev4 : '';
 		disp_status = '';
 		if (is_default_dev(dev4))
