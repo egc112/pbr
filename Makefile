@@ -5,7 +5,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pbr
 PKG_VERSION:=1.2.3
-PKG_RELEASE:=19
+PKG_RELEASE:=20
 PKG_LICENSE:=AGPL-3.0-or-later
 PKG_MAINTAINER:=Stan Grishin <stangri@melmac.ca>
 
@@ -55,8 +55,16 @@ define Package/pbr/install
 	$(INSTALL_BIN) ./files/etc/init.d/pbr $(1)/etc/init.d/pbr
 	$(INSTALL_DIR) $(1)/lib/pbr
 	$(INSTALL_DATA) ./files/lib/pbr/pbr.uc $(1)/lib/pbr/pbr.uc
+	$(INSTALL_DATA) ./files/lib/pbr/pkg.uc $(1)/lib/pbr/pkg.uc
 	$(INSTALL_DATA) ./files/lib/pbr/cli.uc $(1)/lib/pbr/cli.uc
-	$(SED) "s|^\(\tversion:\).*|\1 '$(PKG_VERSION)-r$(PKG_RELEASE)',|" $(1)/lib/pbr/pbr.uc
+	$(INSTALL_DATA) ./files/lib/pbr/sys.uc $(1)/lib/pbr/sys.uc
+	$(INSTALL_DATA) ./files/lib/pbr/validators.uc $(1)/lib/pbr/validators.uc
+	$(INSTALL_DATA) ./files/lib/pbr/output.uc $(1)/lib/pbr/output.uc
+	$(INSTALL_DATA) ./files/lib/pbr/config.uc $(1)/lib/pbr/config.uc
+	$(INSTALL_DATA) ./files/lib/pbr/platform.uc $(1)/lib/pbr/platform.uc
+	$(INSTALL_DATA) ./files/lib/pbr/network.uc $(1)/lib/pbr/network.uc
+	$(INSTALL_DATA) ./files/lib/pbr/nft.uc $(1)/lib/pbr/nft.uc
+	$(SED) "s|^\(\tversion:\).*|\1 '$(PKG_VERSION)-r$(PKG_RELEASE)',|" $(1)/lib/pbr/pkg.uc
 	$(INSTALL_DIR) $(1)/etc/config
 	$(INSTALL_CONF) ./files/etc/config/pbr $(1)/etc/config/pbr
 	$(INSTALL_DIR) $(1)/usr/share/pbr

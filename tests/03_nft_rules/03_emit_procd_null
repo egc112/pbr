@@ -1,7 +1,8 @@
 Testing emit_procd_shell() handles null/empty data gracefully.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 // Null input
 let r1 = pbr.emit_procd_shell(null);

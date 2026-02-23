@@ -6,7 +6,8 @@
 // Called from init script:
 //   ucode -S -L /lib/pbr /lib/pbr/cli.uc -- <action> [args...]
 
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let action = shift(ARGV);
 if (action == '--') action = shift(ARGV);

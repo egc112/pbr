@@ -1,7 +1,8 @@
 Testing api.nft4() adds rules and api.nft6() drops rules when ipv6 is disabled.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 // Override loadstring so user file code is actually evaluated
 global.loadstring = global._orig_loadstring;

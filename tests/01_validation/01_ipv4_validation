@@ -1,7 +1,8 @@
 Testing is_ipv4() validation function.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 let tests = [
 	// Valid IPv4 addresses
 	['192.168.1.1', true],

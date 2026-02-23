@@ -1,7 +1,8 @@
 Testing start() returns ifacesTriggers and emit_procd_shell() emits shell variable.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let result = pbr.start_service(['on_start']);
 

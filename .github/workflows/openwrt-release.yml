@@ -38,6 +38,26 @@ jobs:
       - name: Verify ucode
         run: ucode -e 'import { readfile } from "fs"; print("ucode ok\n");'
 
+      - name: Lint ucode modules
+        run: |
+          cd files/lib/pbr
+          fail=0
+          for mod in pkg shell config output validators platform network nft pbr; do
+            printf "compile-check %s.uc ... " "$mod"
+            if ucode -S -L. -cdynlink=fs,uci,ubus -c -o /dev/null -e "import x from '$mod';" 2>&1; then
+              echo "ok"
+            else
+              fail=1
+            fi
+          done
+          printf "compile-check cli.uc ... "
+          if ucode -S -L. -cdynlink=fs,uci,ubus -c -o /dev/null cli.uc 2>&1; then
+            echo "ok"
+          else
+            fail=1
+          fi
+          exit $fail
+
       - name: Run functional tests
         run: bash tests/run_tests.sh
 

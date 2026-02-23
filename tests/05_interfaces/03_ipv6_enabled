@@ -1,7 +1,8 @@
 Testing that IPv6 rules are generated when ipv6_enabled=1.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let result = pbr.start_service(['on_start']);
 

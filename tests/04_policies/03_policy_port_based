@@ -1,7 +1,8 @@
 Testing port-based policy generates correct nft rules with protocol and dport.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let result = pbr.start_service(['on_start']);
 

@@ -12,6 +12,16 @@ line='........................................'
 patch_dir="/tmp/pbr_test_modules.$$"
 mkdir -p "$patch_dir"
 
+# Symlink sub-modules so that import statements in the patched pbr.uc
+# resolve correctly (import resolves relative to the importing file).
+for mod in pkg.uc validators.uc sys.uc output.uc config.uc \
+           platform.uc network.uc nft.uc; do
+	ln -sf "$(pwd)/files/lib/pbr/$mod" "$patch_dir/$mod"
+done
+
+# Copy pbr.uc to the patch directory. The sed converts any remaining
+# ES import statements for fs/uci/ubus to require() calls so the mock
+# framework can intercept them through the module cache.
 sed \
 	-e "s|import { readfile, writefile, popen, stat, unlink, open, glob, mkdir, mkstemp, access, dirname, lsdir } from 'fs';|let _fs = require('fs'), readfile = _fs.readfile, writefile = _fs.writefile, popen = _fs.popen, stat = _fs.stat, unlink = _fs.unlink, open = _fs.open, glob = _fs.glob, mkdir = _fs.mkdir, mkstemp = _fs.mkstemp, access = _fs.access, dirname = _fs.dirname, lsdir = _fs.lsdir;|" \
 	-e "s|import { cursor } from 'uci';|let _uci = require('uci'), cursor = _uci.cursor;|" \

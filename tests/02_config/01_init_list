@@ -1,7 +1,8 @@
 Testing get_init_list() returns enabled status from config.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let result = pbr.get_init_list();
 let checks = [

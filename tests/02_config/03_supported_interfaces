@@ -1,7 +1,8 @@
 Testing get_supported_interfaces() discovers interfaces from network/firewall config.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let result = pbr.get_supported_interfaces();
 let ifaces = result['pbr'].interfaces;

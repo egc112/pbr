@@ -1,7 +1,8 @@
 Testing that unsafe nft commands (list, delete, flush) are rejected by api.nft/nft4/nft6.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 // Override loadstring so user file code is actually evaluated
 global.loadstring = global._orig_loadstring;

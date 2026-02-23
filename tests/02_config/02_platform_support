@@ -1,7 +1,8 @@
 Testing get_platform_support() detects available tools.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let result = pbr.get_platform_support();
 let ps = result['pbr'];

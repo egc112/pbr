@@ -1,7 +1,8 @@
 Testing that api.nft() still works for backwards compatibility with existing user scripts.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 // Override loadstring so user file code is actually evaluated
 global.loadstring = global._orig_loadstring;

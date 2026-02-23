@@ -1,7 +1,8 @@
 Testing emit_procd_shell() includes errors and warnings.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let data = {
 	packageCompat: 26,

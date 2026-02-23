@@ -1,7 +1,8 @@
 Testing that pbr module loads correctly and exports expected API.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 // Verify the module exports exist
 let checks = [

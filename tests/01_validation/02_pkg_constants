@@ -1,7 +1,8 @@
 Testing package constants and file path definitions.
 
 -- Testcase --
-import pbr from 'pbr';
+import create_pbr from 'pbr';
+let pbr = create_pbr();
 
 let checks = [
 	['config_file',       pbr.pkg.config_file == '/etc/config/pbr'],
