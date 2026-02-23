@@ -24,7 +24,7 @@ case 'stop_service':
 	break;
 
 case 'status_service':
-	pbr.status_service(ARGV[0]);
+	pbr.status_service(ARGV);
 	break;
 
 case 'netifd':

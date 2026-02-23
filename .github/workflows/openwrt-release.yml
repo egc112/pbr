@@ -42,7 +42,7 @@ jobs:
         run: |
           cd files/lib/pbr
           fail=0
-          for mod in pkg shell config output validators platform network nft pbr; do
+          for mod in pkg sys config output validators platform network nft pbr; do
             printf "compile-check %s.uc ... " "$mod"
             if ucode -S -L. -cdynlink=fs,uci,ubus -c -o /dev/null -e "import x from '$mod';" 2>&1; then
               echo "ok"

@@ -772,22 +772,22 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 				return true;
 			case 'reload':
 				if (!env.resolver_set_supported) return false;
-				output.debug('Reloading dnsmasq ');
+				output.debug.write('Reloading dnsmasq ');
 				if (sh.run('/etc/init.d/dnsmasq reload') == 0) {
-					output.debug_okn();
+					output.debug.okn();
 					return true;
 				} else {
-					output.debug_failn();
+					output.debug.failn();
 					return false;
 				}
 			case 'restart':
 				if (!env.resolver_set_supported) return false;
-				output.debug('Restarting dnsmasq ');
+				output.debug.write('Restarting dnsmasq ');
 				if (sh.run('/etc/init.d/dnsmasq restart') == 0) {
-					output.debug_okn();
+					output.debug.okn();
 					return true;
 				} else {
-					output.debug_failn();
+					output.debug.failn();
 					return false;
 				}
 			case 'compare_hash': {

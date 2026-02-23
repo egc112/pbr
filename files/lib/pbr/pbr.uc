@@ -163,13 +163,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 		switch (param) {
 		case 'on_start':
-			output.info('Loading environment (' + param + ') ');
+			output.info.write('Loading environment (' + param + ') ');
 			start_time = time();
 			load_config();
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Loading config took ' + (end_time - start_time) + 's');
 			if (!cfg.enabled) {
-				output.info_failn();
+				output.info.failn();
 				push(state.errors, { code: 'errorServiceDisabled' });
 				output.error(get_text('errorServiceDisabled', cfg));
 				output.print("Run the following commands before starting service again:\\n");
@@ -181,20 +181,20 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Detecting environment took ' + (end_time - start_time) + 's');
 			if (!_check_system_health()) {
-				output.info_failn();
+				output.info.failn();
 				return false;
 			}
 			start_time = time();
 			net.load(param);
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Loading network data took ' + (end_time - start_time) + 's');
-			output.info_okn();
+			output.info.okn();
 			break;
 	
 		case 'on_stop':
 		case 'on_reload':
 		case 'on_interface_reload':
-			output.info('Loading environment (' + param + ') ');
+			output.info.write('Loading environment (' + param + ') ');
 			start_time = time();
 			load_config();
 			end_time = time();
@@ -207,7 +207,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			net.load(param);
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Loading network data took ' + (end_time - start_time) + 's');
-			output.info_okn();
+			output.info.okn();
 			break;
 	
 		case 'netifd':
@@ -519,15 +519,15 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		}
 	
 		process_dns_policy_error = false;
-		output.verbose("Routing '" + name + "' DNS to " + dest_dns + ':' + dest_dns_port + ' ');
+		output.verbose.write("Routing '" + name + "' DNS to " + dest_dns + ':' + dest_dns_port + ' ');
 	
 		if (!src_addr) {
 			push(state.errors, { code: 'errorPolicyNoSrcDest', info: name });
-			output.verbose_fail(); return 1;
+			output.verbose.fail(); return 1;
 		}
 		if (!dest_dns) {
 			push(state.errors, { code: 'errorPolicyNoDns', info: name });
-			output.verbose_fail(); return 1;
+			output.verbose.fail(); return 1;
 		}
 	
 		let filter_list = 'phys_dev phys_dev_negative mac_address mac_address_negative domain domain_negative ipv4 ipv4_negative ipv6 ipv6_negative';
@@ -540,8 +540,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			}
 		}
 	
-		if (process_dns_policy_error) output.verbose_fail();
-		else output.verbose_ok();
+		if (process_dns_policy_error) output.verbose.fail();
+		else output.verbose.ok();
 	}
 	
 	// ── Policy Process ──────────────────────────────────────────────────
@@ -558,19 +558,19 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		proto = lc(proto || '');
 		if (proto == 'auto' || proto == 'all') proto = '';
 	
-		output.verbose("Routing '" + name + "' via " + interface_name + ' ');
+		output.verbose.write("Routing '" + name + "' via " + interface_name + ' ');
 	
 		if (!src_addr && !src_port && !dest_addr && !dest_port) {
 			push(state.errors, { code: 'errorPolicyNoSrcDest', info: name });
-			output.verbose_fail(); return 1;
+			output.verbose.fail(); return 1;
 		}
 		if (!interface_name) {
 			push(state.errors, { code: 'errorPolicyNoInterface', info: name });
-			output.verbose_fail(); return 1;
+			output.verbose.fail(); return 1;
 		}
 		if (!net.is_supported_interface(interface_name) && !net.is_mwan4_strategy(interface_name)) {
 			push(state.errors, { code: 'errorPolicyUnknownInterface', info: name });
-			output.verbose_fail(); return 1;
+			output.verbose.fail(); return 1;
 		}
 	
 		let j_parts = [];
@@ -624,8 +624,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			}
 		}
 	
-		if (process_policy_error) output.verbose_fail();
-		else output.verbose_ok();
+		if (process_policy_error) output.verbose.fail();
+		else output.verbose.ok();
 	}
 	
 	// ── Interface Routing ───────────────────────────────────────────────
@@ -1015,7 +1015,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			if (net.is_netifd_interface_default(iface))
 				disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
 			display_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
-			output.verbose("Setting up routing for '" + display_text + "' ");
+			output.verbose.write("Setting up routing for '" + display_text + "' ");
 			if (interface_routing('create', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 				set_interface(iface, {
 					tid: _tid, mark: _mark, priority: _priority,
@@ -1025,11 +1025,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					is_default: disp_status ? true : false,
 					status_symbol: disp_status, action: 'create',
 				});
-				if (net.is_netifd_interface(iface)) output.verbose_okb();
-				else output.verbose_ok();
+				if (net.is_netifd_interface(iface)) output.verbose.okb();
+				else output.verbose.ok();
 			} else {
 				push(state.errors, { code: 'errorFailedSetup', info: display_text });
-				output.verbose_fail();
+				output.verbose.fail();
 			}
 			break;
 		}
@@ -1052,10 +1052,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			}
 			disp_dev = (iface != dev4) ? dev4 : '';
 			display_text = iface + '/' + (disp_dev ? disp_dev : '');
-			output.verbose("Removing routing for '" + display_text + "' ");
+			output.verbose.write("Removing routing for '" + display_text + "' ");
 			interface_routing('destroy', _tid, _mark, iface, '', dev4, '', dev6, _priority);
-			if (net.is_netifd_interface(iface)) output.verbose_okb();
-			else output.verbose_ok();
+			if (net.is_netifd_interface(iface)) output.verbose.okb();
+			else output.verbose.ok();
 			break;
 		}
 	
@@ -1100,7 +1100,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
 			if (iface == reloaded_iface) {
 				let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + (gw4 || '0.0.0.0') + (cfg.ipv6_enabled ? '/' + (gw6 || '::/0') : '');
-				output.verbose("Reloading routing for '" + ri_text + "' ");
+				output.verbose.write("Reloading routing for '" + ri_text + "' ");
 				if (interface_routing('reload_interface', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 					set_interface(iface, {
 						tid: _tid, mark: _mark, priority: _priority,
@@ -1110,11 +1110,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						is_default: disp_status ? true : false,
 						status_symbol: disp_status, action: 'reload_interface',
 					});
-					if (net.is_netifd_interface(iface)) output.verbose_okb();
-					else output.verbose_ok();
+					if (net.is_netifd_interface(iface)) output.verbose.okb();
+					else output.verbose.ok();
 				} else {
 					push(state.errors, { code: 'errorFailedReload', info: ri_text });
-					output.verbose_fail();
+					output.verbose.fail();
 				}
 			} else {
 				set_interface(iface, {
@@ -1149,15 +1149,15 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let _user_file_process_sh = function(path) {
 			if (sh.run('/bin/sh -n ' + sh.quote(path)) != 0) {
 				push(state.errors, { code: 'errorUserFileSyntax', info: path });
-				output.info_fail();
+				output.info.fail();
 				return 1;
 			}
 			if (_is_bad_user_file_nft_call(path)) {
 				push(state.errors, { code: 'errorIncompatibleUserFile', info: path });
-				output.info_fail();
+				output.info.fail();
 				return 1;
 			}
-			output.verbose('Running ' + path + ' ');
+			output.verbose.write('Running ' + path + ' ');
 			let nft_capture = '/var/run/pbr.nft.user';
 			let wrapper_path = '/var/run/pbr.user_wrapper.sh';
 			unlink(nft_capture);
@@ -1176,15 +1176,15 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				let content = readfile(path) || '';
 				if (index(content, 'curl') >= 0 && !sh.is_present('curl'))
 					push(state.errors, { code: 'errorUserFileNoCurl', info: path });
-				output.verbose_fail();
+				output.verbose.fail();
 				return 1;
 			}
-			output.verbose_ok();
+			output.verbose.ok();
 			return 0;
 		};
 	
 		let _user_file_process_uc = function(path) {
-			output.verbose('Running ' + path + ' ');
+			output.verbose.write('Running ' + path + ' ');
 			let _unsafe = false;
 			let _pending = [];
 			let _nft_validate = function(rule_line) {
@@ -1234,19 +1234,19 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			let code = readfile(path);
 			if (!code) {
 				push(state.errors, { code: 'errorUserFileRunning', info: path });
-				output.verbose_fail();
+				output.verbose.fail();
 				return 1;
 			}
 			let fn = loadstring('' + code);
 			if (!fn) {
 				push(state.errors, { code: 'errorUserFileSyntax', info: path });
-				output.verbose_fail();
+				output.verbose.fail();
 				return 1;
 			}
 			let result;
 			try { result = fn(); } catch (e) {
 				push(state.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
-				output.verbose_fail();
+				output.verbose.fail();
 				return 1;
 			}
 			try {
@@ -1256,24 +1256,24 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					result.run(api);
 			} catch (e) {
 				push(state.errors, { code: 'errorUserFileRunning', info: path + ': ' + e });
-				output.verbose_fail();
+				output.verbose.fail();
 				return 1;
 			}
 			if (_unsafe) {
 				push(state.errors, { code: 'errorUserFileUnsafeNft', info: path });
-				output.verbose_fail();
+				output.verbose.fail();
 				return 1;
 			}
 			for (let line in _pending)
 				nft.nft_add(line);
-			output.verbose_ok();
+			output.verbose.ok();
 			return 0;
 		};
 	
 		if (enabled != '1' && enabled != 1) return 0;
 		if (!stat(path) || stat(path).size == 0) {
 			push(state.errors, { code: 'errorUserFileNotFound', info: path });
-			output.info_fail();
+			output.info.fail();
 			return 1;
 		}
 		if (match(path, /\.uc$/))
@@ -1334,7 +1334,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let rule_params = cfg._nft_rule_params ? ' ' + cfg._nft_rule_params : '';
 	
 		nft.nft_file.init('netifd');
-		output.info('Netifd extensions ' + action + (target_iface ? ' on ' + target_iface : '') + ' ');
+		output.info.write('Netifd extensions ' + action + (target_iface ? ' on ' + target_iface : '') + ' ');
 	
 		let net_ctx = config.uci_ctx('network', true);
 		net_ctx.delete('network', 'main_ipv4');
@@ -1399,7 +1399,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 			if (!target_iface || target_iface == iface) {
 				if (action == 'install') {
-					output.verbose('Setting up netifd extensions for ' + iface + '... ');
+					output.verbose.write('Setting up netifd extensions for ' + iface + '... ');
 					if (!net.is_split_uplink() || !net.is_uplink6(iface)) {
 						net_ctx.set('network', iface, 'ip4table', rt_name);
 						let rule4 = rt_name + '_ipv4';
@@ -1451,16 +1451,16 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 							nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
 								pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + nft_prefix + '_mark_' + _mark);
 					}
-					output.verbose_okb();
+					output.verbose.okb();
 				} else if (action == 'remove' || action == 'uninstall') {
-					output.verbose('Removing netifd extensions for ' + iface + '... ');
+					output.verbose.write('Removing netifd extensions for ' + iface + '... ');
 					if (rt_name != 'main') {
 						let rt = readfile(pkg.rt_tables_file) || '';
 						let lines = filter(split(rt, '\n'), l => index(l, rt_name) < 0);
 						writefile(pkg.rt_tables_file, join('\n', lines) + '\n');
 					}
 					nft.nft_file.sed('netifd', "'/" + _mark + "/d'");
-					output.verbose_okb();
+					output.verbose.okb();
 				}
 			}
 	
@@ -1471,7 +1471,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			}
 		});
 	
-		output.info_newline();
+		output.info.newline();
 	
 		switch (action) {
 		case 'install':
@@ -1553,7 +1553,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			return null;
 	
 		let ubus_errors = config.ubus_call('service', 'list', { name: pkg.name });
-		let svc_data = ubus_errors?.[pkg.name]?.instances?.main?.data;
+		let svc_data = ubus_errors?.[pkg.name]?.data;
 		if (svc_data?.errors && length(svc_data.errors) > 0) {
 			service_start_trigger = 'on_start';
 			reloaded_iface = null;
@@ -1571,14 +1571,14 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		switch (service_start_trigger) {
 		case 'on_interface_reload':
 			output.okn();
-			output.info('Reloading Interface: ' + reloaded_iface + ' ');
+			output.info.write('Reloading Interface: ' + reloaded_iface + ' ');
 			start_time = time();
 			config.uci_ctx('network').foreach('network', 'interface', function(s) {
 				interface_process(s['.name'], 'reload_interface', reloaded_iface);
 			});
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Reloading interface ' + reloaded_iface + ' took ' + (end_time - start_time) + 's');
-			output.info_newline();
+			output.info.newline();
 			break;
 	
 		default:
@@ -1588,7 +1588,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			nft.nft_file.init('main', iface_registry);
 			output.okn();
 	
-			output.info('Processing interfaces ');
+			output.info.write('Processing interfaces ');
 			start_time = time();
 			config.uci_ctx('network').foreach('network', 'interface', function(s) {
 				interface_process(s['.name'], 'create');
@@ -1599,10 +1599,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			sh.run(pkg.ip_full + ' route flush cache');
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Processing interfaces took ' + (end_time - start_time) + 's');
-			output.info_newline();
+			output.info.newline();
 	
 			if (net.is_config_enabled('policy')) {
-				output.info('Processing policies ');
+				output.info.write('Processing policies ');
 				start_time = time();
 				let uid_counter = 0;
 				config.uci_ctx(pkg.name, true).foreach(pkg.name, 'policy', function(s) {
@@ -1614,11 +1614,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				});
 				end_time = time();
 				output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Processing policies took ' + (end_time - start_time) + 's');
-				output.info_newline();
+				output.info.newline();
 			}
 	
 			if (net.is_config_enabled('dns_policy')) {
-				output.info('Processing dns policies ');
+				output.info.write('Processing dns policies ');
 				start_time = time();
 				let uid_counter = 0;
 				config.uci_ctx(pkg.name, true).foreach(pkg.name, 'dns_policy', function(s) {
@@ -1629,14 +1629,14 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				});
 				end_time = time();
 				output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Processing DNS policies took ' + (end_time - start_time) + 's');
-				output.info_newline();
+				output.info.newline();
 			}
 	
 			if (net.is_config_enabled('include') || stat('/etc/' + pkg.name + '.d/')?.type == 'directory') {
 				config.uci_ctx('network').foreach('network', 'interface', function(s) {
 					interface_process(s['.name'], 'create_user_set');
 				});
-				output.info('Processing user file(s) ');
+				output.info.write('Processing user file(s) ');
 				start_time = time();
 				config.uci_ctx(pkg.name, true).foreach(pkg.name, 'include', function(s) {
 					user_file_process(s.enabled, s.path);
@@ -1652,7 +1652,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				}
 				end_time = time();
 				output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Processing user files took ' + (end_time - start_time) + 's');
-				output.info_newline();
+				output.info.newline();
 			}
 	
 			start_time = time();
@@ -1755,7 +1755,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		load('service_started');
 	
 		let svc_info = config.ubus_call('service', 'list', { name: pkg.name });
-		let svc_data = svc_info?.[pkg.name]?.instances?.main?.data;
+		let svc_data = svc_info?.[pkg.name]?.data;
 	
 		if (nft.nft_file.exists('main')) {
 			if (nft.resolver('compare_hash')) nft.resolver('restart');
@@ -1855,17 +1855,53 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	// ── Status Service ──────────────────────────────────────────────────
 	
-	function status_service(param) {
+	function status_service(params) {
 		let readfile = _fs.readfile;
 		let stat = _fs.stat;
 		load('status');
-	
+
+		let verbose = false;
+		for (let p in params)
+			if (p == '-d' || p == '-v') verbose = true;
+
+		// Determine routing mode
+		let has_netifd = length(keys(env.netifd_mark)) > 0;
+		let has_mwan4 = length(keys(env.mwan4_mark)) > 0;
+		let running = platform.is_running_nft_file();
+
+		if (!running) {
+			printf('%s: not active.\n', pkg.service_name);
+			return;
+		}
+
+		if (!verbose) {
+			let mode;
+			if (has_netifd) mode = 'netifd-compatibility mode';
+			else if (has_mwan4) mode = 'mwan4-compatibility mode';
+			else mode = 'dynamic routing tables mode';
+			printf('%s: active in %s.\n', pkg.service_name, mode);
+
+			if (has_netifd)
+				printf('  netifd nft file: %s\n', pkg.nft_netifd_file);
+			if (has_mwan4) {
+				let m4 = null;
+				try { m4 = require('mwan4'); } catch(e) {}
+				if (m4 && m4.pkg && m4.pkg.NFT_FILES) {
+					for (let target in keys(m4.pkg.NFT_FILES))
+						printf('  mwan4 nft file:  %s\n', m4.pkg.NFT_FILES[target]);
+				}
+			}
+			printf('  main nft file:   %s\n', pkg.nft_main_file);
+			return;
+		}
+
+		// Verbose output (existing detailed diagnostics)
 		let board = config.ubus_call('system', 'board', {});
 		let openwrt_release = board?.release?.description || 'unknown';
-	
+
 		let _SEP_ = '===================================';
 		let status_text = pkg.service_name + ' on ' + openwrt_release + '.\\n';
-	
+
 		if (cfg.uplink_interface4) {
 			let dev4 = net.network_get_device(cfg.uplink_interface4);
 			if (!dev4) dev4 = net.network_get_physdev(cfg.uplink_interface4);
@@ -1883,13 +1919,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			status_text += 'Uplink (IPv6): ' + cfg.uplink_interface6 +
 				(dev6 ? '/' + dev6 : '') + '/' + (env.uplink_gw6 || '::/0') + '.\\n';
 		}
-	
+
 		printf('%s\n', _SEP_);
 		printf('%s - environment\n', pkg.name);
 		printf('%s', replace(status_text, /\\n/g, '\n'));
 		printf('%s\n', _SEP_);
 		system("dnsmasq --version 2>/dev/null | sed '/^$/,$d'");
-	
+
 		if (nft.nft_file.exists('netifd')) {
 			printf('%s\n', _SEP_);
 			let netifd_content = nft.nft_file.show('netifd');
@@ -1900,14 +1936,14 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			let main_content = nft.nft_file.show('main');
 			if (main_content) printf('%s', main_content);
 		}
-	
+
 		printf('%s\n', _SEP_);
 		printf('%s chains - policies\n', pkg.name);
 		for (let ch in split(pkg.chains_list + ' dstnat', /\s+/)) {
 			system('nft -a list table inet ' + pkg.nft_table +
 				" | sed -n '/chain " + pkg.nft_prefix + '_' + ch + " {/,/\\t}/p'");
 		}
-	
+
 		printf('%s\n', _SEP_);
 		printf('%s chains - marking\n', pkg.name);
 		let mark_chains = nft.get_mark_nft_chains();
@@ -1916,7 +1952,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			system('nft -a list table inet ' + pkg.nft_table +
 				" | sed -n '/chain " + mc + " {/,/\\t}/p'");
 		}
-	
+
 		printf('%s\n', _SEP_);
 		printf('%s nft sets\n', pkg.name);
 		let sets = nft.get_nft_sets();
@@ -1925,13 +1961,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			system('nft -a list table inet ' + pkg.nft_table +
 				" | sed -n '/set " + ns + " {/,/\\t}/p'");
 		}
-	
+
 		if (stat(pkg.dnsmasq_file)?.size > 0) {
 			printf('%s\n', _SEP_);
 			printf('dnsmasq nft sets in %s\n', pkg.dnsmasq_file);
 			printf('%s', readfile(pkg.dnsmasq_file) || '');
 		}
-	
+
 		printf('%s\n', _SEP_);
 		printf('%s tables & routing\n', pkg.name);
 		let rt = readfile(pkg.rt_tables_file) || '';
@@ -1939,7 +1975,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		for (let l in split(rt, '\n'))
 			if (index(l, pkg.name + '_') >= 0) table_count++;
 		let wan_tid = +nft.get_rt_tables_next_id() - table_count;
-	
+
 		for (let i = 0; i <= table_count; i++) {
 			let tid = (i == 0) ? 'main' : '' + (wan_tid + i - 1);
 			let status_table = '';
@@ -1993,8 +2029,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		system('ubus call system board');
 		printf('\n===== /etc/init.d/pbr restart =====\n');
 		system('/etc/init.d/pbr restart');
-		printf('\n===== /etc/init.d/pbr status (after restart) =====\n');
-		system('/etc/init.d/pbr status');
+		printf('\n===== /etc/init.d/pbr status -d (after restart) =====\n');
+		system('/etc/init.d/pbr status -d');
 	}
 	
 	// ── rpcd Data Functions ─────────────────────────────────────────────
@@ -2013,7 +2049,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		load('status');
 	
 		let ubus_data = config.ubus_call('service', 'list', { name: pkg.name });
-		let svc_data = ubus_data?.[pkg.name]?.instances?.main?.data;
+		let svc_data = ubus_data?.[pkg.name]?.data;
 		let gateways = svc_data?.status?.gateways || '';
 		gateways = replace(gateways, /\x1b\[[0-9;]*m/g, '');
 		gateways = replace(gateways, /\\n/g, '<br />');
