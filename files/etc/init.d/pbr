@@ -32,7 +32,7 @@ else
 fi
 
 readonly packageName='pbr'
-readonly _ucode="ucode -S -L /lib/${packageName} /lib/${packageName}/cli.uc --"
+readonly _ucode="ucode -S -L /lib/${packageName} -L /lib/mwan4 /lib/${packageName}/cli.uc --"
 
 # shellcheck disable=SC1091
 . "${IPKG_INSTROOT}/lib/functions.sh"

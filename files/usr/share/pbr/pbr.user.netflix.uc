@@ -4,7 +4,7 @@
 // Credits to https://github.com/kkeker and https://github.com/tophirsch for api.bgpview.io code.
 
 return function(api) {
-	if (!api.compat || api.compat < 27) return;
+	if (!api.compat || api.compat < 29) return;
 
 	let iface = 'wan';
 	let asn = '2906';
@@ -36,6 +36,9 @@ return function(api) {
 		return prefixes;
 	};
 
+	let set4 = api.nftset(iface, '4');
+	let set6 = api.nftset(iface, '6');
+
 	// IPv4
 	let url4;
 	if (db_source == 'ipinfo.io')
@@ -49,7 +52,7 @@ return function(api) {
 	if (raw4) {
 		let prefixes4 = _extract_prefixes(raw4, 4);
 		for (let prefix in prefixes4)
-			api.nft4('add element ' + api.table + ' pbr_' + iface + '_4_dst_ip_user { ' + prefix + ' }');
+			api.nft4('add element ' + api.table + ' ' + set4 + ' { ' + prefix + ' }');
 	}
 
 	// IPv6
@@ -64,7 +67,7 @@ return function(api) {
 		if (raw6) {
 			let prefixes6 = _extract_prefixes(raw6, 6);
 			for (let prefix in prefixes6)
-				api.nft6('add element ' + api.table + ' pbr_' + iface + '_6_dst_ip_user { ' + prefix + ' }');
+				api.nft6('add element ' + api.table + ' ' + set6 + ' { ' + prefix + ' }');
 		}
 	}
 };

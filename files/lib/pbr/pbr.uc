@@ -9,11 +9,6 @@ import { readfile, writefile, popen, stat, unlink, open, glob, mkdir, mkstemp, a
 import { cursor } from 'uci';
 import { connect } from 'ubus';
 
-// Forward declarations — these functions are defined later but referenced
-// by earlier functions.  ucode does not hoist function declarations, so
-// without these `let` bindings the early callers would crash with
-// "access to undeclared variable".
-let is_ignored_interface;
 // rpcd backward-compat wrappers are now methods on pbr
 
 // ── Constants ───────────────────────────────────────────────────────
@@ -21,7 +16,7 @@ let is_ignored_interface;
 const pkg = {
 	name: 'pbr',
 	version: 'dev-test',
-	compat: '28',
+	compat: '29',
 	config_file: '/etc/config/pbr',
 	debug_file: '/var/run/pbr.debug',
 	lock_file: '/var/run/pbr.lock',
@@ -90,9 +85,11 @@ let env = {
 	tor_dns_port: '',
 	tor_traffic_port: '',
 
-	// External marks (parsed from nft files by env.detect())
-	netifd_marks: {},
-	mwan4_marks: {},
+	// External marks and chains (populated by env.detect())
+	netifd_mark: {},
+	mwan4_mark: {},
+	mwan4_interface_chain: {},
+	mwan4_strategy_chain: {},
 
 	// Guard flags
 	_config_loaded: false,
@@ -131,11 +128,10 @@ let pbr = {
 	// NFT rule accumulator
 	nft_lines: [],
 
-	// Per-interface data and error/warning tracking
-	interfaces: {},
+	// Per-interface data, error/warning tracking
 	errors: [],
 	warnings: [],
-	// Domain sub-objects (methods assigned later)
+	// Domain sub-objects (methods assigned later; interface also holds per-iface data)
 	interface: {},
 	policy: {},
 	dns_policy: {},
@@ -146,19 +142,21 @@ let pbr = {
 pbr.reset = function() {
 	pbr.errors = [];
 	pbr.warnings = [];
-	pbr.interfaces = {};
+	for (let k in keys(pbr.interface))
+		if (type(pbr.interface[k]) != 'function')
+			delete pbr.interface[k];
 };
 pbr.get_mark = function(iface) {
 	let iface_key = replace(iface, '-', '_');
-	return pbr.interfaces[iface_key]?.mark;
+	return pbr.interface[iface_key]?.mark;
 };
 pbr.set_interface = function(iface, data) {
 	let iface_key = replace(iface, '-', '_');
-	pbr.interfaces[iface_key] = data;
+	pbr.interface[iface_key] = data;
 };
 pbr.get_interface = function(iface) {
 	let iface_key = replace(iface, '-', '_');
-	return pbr.interfaces[iface_key];
+	return pbr.interface[iface_key];
 };
 
 // ── UCI Cursor ──────────────────────────────────────────────────────
@@ -426,17 +424,6 @@ function is_tailscale(iface) { let d = network_get_device(iface); return d != nu
 function is_wg(iface) { let _p = network_get_protocol(iface); return !uci_ctx('network').get('network', iface, 'listen_port') && _p != null && substr(_p, 0, 9) == 'wireguard'; }
 function is_wg_server(iface) { let _p = network_get_protocol(iface); return !!uci_ctx('network').get('network', iface, 'listen_port') && _p != null && substr(_p, 0, 9) == 'wireguard'; }
 function is_tor(iface) { return lc(iface) == 'tor'; }
-function is_tor_running() {
-	if (is_ignored_interface('tor')) return false;	let content = readfile(pkg.tor_config_file);
-	if (!content || content == '') return false;
-	let svc = ubus_call('service', 'list', { name: 'tor' });
-	if (!svc?.tor?.instances) return false;
-	for (let k in keys(svc.tor.instances)) {
-		if (svc.tor.instances[k]?.running == true)
-			return true;
-	}
-	return false;
-}
 function get_xray_traffic_port(iface) {
 	if (!iface) return null;
 	let i = replace('' + iface, pkg.xray_iface_prefix, '');
@@ -471,7 +458,19 @@ function is_lan(iface) {
 	if (!d) return false;
 	return str_contains(cfg.lan_device, d);
 }
-is_ignored_interface = function(iface) { return str_contains_word(cfg.ignored_interface, iface); };
+function is_ignored_interface(iface) { return str_contains_word(cfg.ignored_interface, iface); }
+function is_tor_running() {
+	if (is_ignored_interface('tor')) return false;
+	let content = readfile(pkg.tor_config_file);
+	if (!content || content == '') return false;
+	let svc = ubus_call('service', 'list', { name: 'tor' });
+	if (!svc?.tor?.instances) return false;
+	for (let k in keys(svc.tor.instances)) {
+		if (svc.tor.instances[k]?.running == true)
+			return true;
+	}
+	return false;
+}
 function is_ignore_target(iface) { return lc(iface) == 'ignore'; }
 function is_netifd_table(name) { let c = readfile('/etc/config/network') || ''; return index(c, name) >= 0 && !!match(c, regexp('ip.table.*' + name)); }
 function is_netifd_interface(iface) {
@@ -481,8 +480,7 @@ function is_netifd_interface(iface) {
 	return !!(ip4t || ip6t);
 }
 function is_mwan4_interface(iface) {
-	// TODO: detect mwan4-managed interfaces
-	return false;
+	return !!(iface && env.mwan4_mark[iface]);
 }
 function is_netifd_interface_default(iface) {
 	if (!is_netifd_interface(iface)) return false;
@@ -517,7 +515,7 @@ function is_family_mismatch(a, b) {
 }
 // ── Network Helper Functions ────────────────────────────────────────
 
-function pbr_get_gateway4(iface, dev) {
+pbr.get_gateway4 = function(iface, dev) {
 	let gw = network_get_gateway(iface);
 	if (!gw || gw == '0.0.0.0') {
 		let out = shell(pkg.ip_full + ' -4 a list dev ' + shell_quote(dev) + ' 2>/dev/null');
@@ -525,9 +523,9 @@ function pbr_get_gateway4(iface, dev) {
 		gw = m ? m[1] : '';
 	}
 	return gw;
-}
+};
 
-function pbr_get_gateway6(iface, dev) {
+pbr.get_gateway6 = function(iface, dev) {
 	if (is_uplink4(iface)) iface = cfg.uplink_interface6;
 	let gw = network_get_gateway6(iface);
 	if (!gw || gw == '::/0' || gw == '::0/0' || gw == '::') {
@@ -536,7 +534,7 @@ function pbr_get_gateway6(iface, dev) {
 		gw = m ? m[1] : '';
 	}
 	return gw;
-}
+};
 
 function filter_options(opt, values) {
 	if (!values) return '';
@@ -574,12 +572,12 @@ function inline_set(value) {
 
 // mwan4 detection and integration functions
 
-function mwan4_is_installed() {
+function is_mwan4_installed() {
 	return access('/etc/init.d/mwan4', 'x') == true && stat('/etc/config/mwan4')?.type != null;
 }
 
-function mwan4_is_running() { // ucode-lsp disable
-	if (!mwan4_is_installed()) return false;
+function is_mwan4_running() { // ucode-lsp disable
+	if (!is_mwan4_installed()) return false;
 	return sys('/etc/init.d/mwan4 running') == 0;
 }
 
@@ -716,12 +714,30 @@ env.detect = function() {
 	let netifd_nft = readfile(pkg.nft_netifd_file) || '';
 	for (let line in split(netifd_nft, '\n')) {
 		let m = match(line, define_re);
-		if (m) env.netifd_marks[m[1]] = m[2];
+		if (m) env.netifd_mark[m[1]] = m[2];
 	}
-	let mwan4_nft = readfile(pkg.mwan4_nft_iface_file) || '';
-	for (let line in split(mwan4_nft, '\n')) {
-		let m = match(line, define_re);
-		if (m) env.mwan4_marks[m[1]] = m[2];
+	// mwan4 marks, chains, strategies — from module API if available, fallback to nft file
+	if (is_mwan4_installed()) {
+		let m4 = null;
+		try { m4 = require('mwan4'); m4.load(); } catch(e) {}
+		if (m4) {
+			for (let iface in m4.get_interfaces()) {
+				let mark = m4.get_iface_mark(iface);
+				if (mark) env.mwan4_mark[iface] = mark;
+				env.mwan4_interface_chain[iface] = m4.get_iface_chain(iface);
+			}
+			for (let strategy in m4.get_strategies())
+				env.mwan4_strategy_chain[strategy] = m4.get_strategy_chain(strategy);
+		} else {
+			let mwan4_nft = readfile(pkg.mwan4_nft_iface_file) || '';
+			for (let line in split(mwan4_nft, '\n')) {
+				let m = match(line, define_re);
+				if (m) {
+					env.mwan4_mark[m[1]] = m[2];
+					env.mwan4_interface_chain[m[1]] = pkg.mwan4_nft_prefix + '_iface_in_' + m[1];
+				}
+			}
+		}
 	}
 	env._detected = true;
 };
@@ -1248,13 +1264,13 @@ env.load_network = function(param) {
 	let dev4 = network_get_device(cfg.uplink_interface4);
 	if (!dev4) dev4 = network_get_physdev(cfg.uplink_interface4);
 	if (!env.uplink_gw4)
-		env.uplink_gw4 = pbr_get_gateway4(cfg.uplink_interface4, dev4);
+		env.uplink_gw4 = pbr.get_gateway4(cfg.uplink_interface4, dev4);
 
 	if (cfg.ipv6_enabled) {
 		let dev6 = network_get_device(cfg.uplink_interface6);
 		if (!dev6) dev6 = network_get_physdev(cfg.uplink_interface6);
 		if (!env.uplink_gw6)
-			env.uplink_gw6 = pbr_get_gateway6(cfg.uplink_interface6, dev6);
+			env.uplink_gw6 = pbr.get_gateway6(cfg.uplink_interface6, dev6);
 	}
 
 	if (!env._network_output_done && (param == 'on_boot' || param == 'on_start')) {
@@ -1346,8 +1362,9 @@ pbr.nft_file.init = function(target) {
 		// Emit nft define statements for fw mark/mask and per-interface chain names
 		push(pbr.nft_lines, 'define ' + nft_prefix + '_fw_mark = ' + cfg.fw_mask);
 		push(pbr.nft_lines, 'define ' + nft_prefix + '_fw_mask = ' + cfg.fw_maskXor);
-		for (let iname in keys(pbr.interfaces)) {
-			let idata = pbr.interfaces[iname];
+		for (let iname in keys(pbr.interface)) {
+			let idata = pbr.interface[iname];
+			if (type(idata) == 'function') continue;
 			if (idata?.chain_name) {
 				push(pbr.nft_lines, 'define ' + nft_prefix + '_' + iname + '_chain = ' + idata.chain_name);
 			}
@@ -1499,17 +1516,20 @@ pbr.nft_file.show = function(target) {
 
 // ── nftset() ────────────────────────────────────────────────────────
 
-function nftset(command, iface, target, type_val, uid, comment, param) {
+pbr.get_set_name = function(iface, family, target, type_val, uid) {
+	return pkg.nft_prefix + '_' + (iface ? iface + '_' : '') + (family || '4') +
+		(target ? '_' + target : '') + (type_val ? '_' + type_val : '') + (uid ? '_' + uid : '');
+};
+
+pbr.nftset = function(command, iface, target, type_val, uid, comment, param) {
 	target = target || 'dst';
 	type_val = type_val || 'ip';
 	let mark = param;
 	let nft_prefix = pkg.nft_prefix;
 	let nft_table = pkg.nft_table;
 
-	let nftset4 = nft_prefix + '_' + (iface ? iface + '_' : '') + '4' +
-		(target ? '_' + target : '') + (type_val ? '_' + type_val : '') + (uid ? '_' + uid : '');
-	let nftset6 = nft_prefix + '_' + (iface ? iface + '_' : '') + '6' +
-		(target ? '_' + target : '') + (type_val ? '_' + type_val : '') + (uid ? '_' + uid : '');
+	let nftset4 = pbr.get_set_name(iface, '4', target, type_val, uid);
+	let nftset6 = pbr.get_set_name(iface, '6', target, type_val, uid);
 
 	if (length(nftset4) > 255) {
 		push(pbr.errors, { code: 'errorNftsetNameTooLong', info: nftset4 });
@@ -1653,7 +1673,7 @@ function nftset(command, iface, target, type_val, uid, comment, param) {
 	// nft6 returns true if IPv6 support is not enabled
 	if (!cfg.ipv6_enabled) ipv6_error = true;
 	return !ipv4_error || !ipv6_error;
-}
+};
 
 // ── cleanup() ───────────────────────────────────────────────────────
 
@@ -1878,13 +1898,13 @@ pbr.resolver = function(param, iface, target, type_val, uid, name, value) {
 			if (target == 'src') return false;
 			let words = split(trim('' + (value || '')), /\s+/);
 			for (let d in words) {
-				nftset('add_dnsmasq_element', iface, target, type_val, uid, name, d);
+				pbr.nftset('add_dnsmasq_element', iface, target, type_val, uid, name, d);
 			}
 			return true;
 		case 'create_resolver_set':
 			if (!env.resolver_set_supported) return false;
 			if (target == 'src') return false;
-			return nftset('create_dnsmasq_set', iface, target, type_val, uid, name, value);
+			return pbr.nftset('create_dnsmasq_set', iface, target, type_val, uid, name, value);
 		case 'check_support':
 			return env.resolver_set_supported;
 		case 'cleanup':
@@ -2170,8 +2190,9 @@ pbr.policy.routing = function(name, iface, src_addr, src_port, dest_addr, dest_p
 		let strategy_data = pbr.get_interface(iface);
 		let sname = strategy_data?.strategy_name;
 		if (sname) {
-			dest4 = 'goto ' + pkg.mwan4_nft_prefix + '_strategy_' + sname + '_ipv4';
-			dest6 = 'goto ' + pkg.mwan4_nft_prefix + '_strategy_' + sname + '_ipv6';
+			let schain = env.mwan4_strategy_chain[sname] || (pkg.mwan4_nft_prefix + '_strategy_' + sname);
+			dest4 = 'goto ' + schain + '_ipv4';
+			dest6 = 'goto ' + schain + '_ipv6';
 		} else {
 			pbr.process_policy_error = true;
 			push(pbr.errors, { code: 'errorPolicyProcessUnknownFwmark', info: iface });
@@ -2403,7 +2424,7 @@ pbr.policy.process = function(uid, enabled, name, interface_name, src_addr, src_
 		push(pbr.errors, { code: 'errorPolicyNoInterface', info: name });
 		output.verbose_fail(); return 1;
 	}
-	if (!is_supported_interface(interface_name)) {
+	if (!is_supported_interface(interface_name) && !is_mwan4_strategy(interface_name)) {
 		push(pbr.errors, { code: 'errorPolicyUnknownInterface', info: name });
 		output.verbose_fail(); return 1;
 	}
@@ -2593,9 +2614,9 @@ pbr.interface.routing = function(action, tid, mark, iface, gw4, dev4, gw6, dev6,
 		return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
 	}
 	case 'create_user_set':
-		nftset('create_user_set', iface, 'dst', 'ip', 'user', '', mark) || (s = 1);
-		nftset('create_user_set', iface, 'src', 'ip', 'user', '', mark) || (s = 1);
-		nftset('create_user_set', iface, 'src', 'mac', 'user', '', mark) || (s = 1);
+		pbr.nftset('create_user_set', iface, 'dst', 'ip', 'user', '', mark) || (s = 1);
+		pbr.nftset('create_user_set', iface, 'src', 'ip', 'user', '', mark) || (s = 1);
+		pbr.nftset('create_user_set', iface, 'src', 'mac', 'user', '', mark) || (s = 1);
 		return s;
 
 	case 'delete':
@@ -2712,12 +2733,12 @@ pbr.interface.enumerate = function() {
 		let _priority = iface_priority;
 		let split_uplink_second = false;
 
-		if (is_netifd_interface(iface) && env.netifd_marks[iface]) {
-			_mark = env.netifd_marks[iface];
+		if (is_netifd_interface(iface) && env.netifd_mark[iface]) {
+			_mark = env.netifd_mark[iface];
 			_chain_name = pkg.nft_prefix + '_mark_' + _mark;
-		} else if (is_mwan4_interface(iface) && env.mwan4_marks[iface]) {
-			_mark = env.mwan4_marks[iface];
-			_chain_name = pkg.mwan4_nft_prefix + '_iface_in_' + iface;
+		} else if (is_mwan4_interface(iface) && env.mwan4_mark[iface]) {
+			_mark = env.mwan4_mark[iface];
+			_chain_name = env.mwan4_interface_chain[iface];
 		} else if (is_split_uplink()) {
 			if (is_uplink4(iface) || is_uplink6(iface)) {
 				if (_uplink_mark && _uplink_priority) {
@@ -2865,8 +2886,8 @@ pbr.interface.process = function(iface, action, reloaded_iface) {
 	switch (action) {
 	case 'create': {
 		let _tid = pbr.interface.resolve_tid(iface);
-		gw4 = pbr_get_gateway4(iface, dev4);
-		gw6 = pbr_get_gateway6(iface, dev6);
+		gw4 = pbr.get_gateway4(iface, dev4);
+		gw6 = pbr.get_gateway6(iface, dev6);
 		if (is_split_uplink()) {
 			if (is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -2926,8 +2947,8 @@ pbr.interface.process = function(iface, action, reloaded_iface) {
 
 	case 'reload': {
 		let _tid = pbr.interface.resolve_tid(iface);
-		gw4 = pbr_get_gateway4(iface, dev4);
-		gw6 = pbr_get_gateway6(iface, dev6);
+		gw4 = pbr.get_gateway4(iface, dev4);
+		gw6 = pbr.get_gateway6(iface, dev6);
 		if (is_split_uplink()) {
 			if (is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -2951,8 +2972,8 @@ pbr.interface.process = function(iface, action, reloaded_iface) {
 
 	case 'reload_interface': {
 		let _tid = pbr.interface.resolve_tid(iface);
-		gw4 = pbr_get_gateway4(iface, dev4);
-		gw6 = pbr_get_gateway6(iface, dev6);
+		gw4 = pbr.get_gateway4(iface, dev4);
+		gw6 = pbr.get_gateway6(iface, dev6);
 		if (is_split_uplink()) {
 			if (is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -3083,12 +3104,15 @@ pbr.user_file.process = function(enabled, path) {
 				unlink(tmp);
 				return content || null;
 			},
-			get_target_chain: function(iface) {
+			marking_chain: function(iface) {
 				let data = pbr.get_interface(iface);
-				if (!data) return null;
-				if (is_mwan4_strategy(iface))
-					return data.strategy_name ? ('mwan4_strategy_' + data.strategy_name) : null;
-				return data.chain_name;
+				return data?.chain_name || null;
+			},
+			strategy_chain: function(strategy) {
+				return env.mwan4_strategy_chain[strategy] || null;
+			},
+			nftset: function(iface, family) {
+				return pbr.get_set_name(iface, family, 'dst', 'ip', 'user');
 			},
 		};
 		let code = readfile(path);
@@ -3535,8 +3559,9 @@ pbr.start_service = function(args) {
 
 	let _build_gateway_summary = function() {
 		let lines = [];
-		for (let name in keys(pbr.interfaces)) {
-			let iface = pbr.interfaces[name];
+		for (let name in keys(pbr.interface)) {
+			let iface = pbr.interface[name];
+			if (type(iface) == 'function') continue;
 			if (!iface || iface.action == 'mwan4_strategy') continue;
 			let disp_dev = (name != iface.device_ipv4) ? iface.device_ipv4 : '';
 			let gw4 = iface.gateway_ipv4 || '0.0.0.0';
@@ -3550,8 +3575,9 @@ pbr.start_service = function(args) {
 	};
 	let gw_summary = _build_gateway_summary();
 	let gateways = [];
-	for (let name in keys(pbr.interfaces)) {
-		let iface = pbr.interfaces[name];
+	for (let name in keys(pbr.interface)) {
+		let iface = pbr.interface[name];
+		if (type(iface) == 'function') continue;
 		if (iface.action == 'mwan4_strategy') continue;
 		push(gateways, {
 			name: name,
