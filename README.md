@@ -7,8 +7,8 @@
 Flexible rule-based routing framework for OpenWrt.  
 Route traffic based on IP, MAC, port, protocol, or domain through WAN, VPNs, or tunnels.
 
-For the current stable release, see the [1.2.0 branch](https://github.com/stangri/pbr/blob/1.2.0/README.md).  
-For ongoing development, see the [1.2.1 branch](https://github.com/stangri/pbr/blob/1.2.1/README.md).
+For the current stable release, see the [1.2.2 branch](https://github.com/stangri/pbr/blob/1.2.2/README.md).  
+For ongoing development, see the [1.2.3 branch](https://github.com/stangri/pbr/blob/1.2.3/README.md).
 
 ## Highlights
 
