@@ -664,6 +664,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				sh.run('sync');
 			}
 	
+			// Always create the nft mark chain so policies can reference it
+			// even when the interface device is not yet available (e.g. a down WireGuard tunnel)
+			let idata = get_interface(iface);
+			nft.ensure_mark_chain(mark, idata.chain_name);
+	
 			if (dev4) {
 				ipv4_error = 0;
 				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
@@ -677,9 +682,6 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						ipv4_error = 1;
 				}
 	
-				let idata = get_interface(iface);
-				nft.ensure_mark_chain(mark, idata.chain_name);
-	
 				let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
 				if (+dscp >= 1 && +dscp <= 63) {
 					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
@@ -689,6 +691,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
 						pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
 				}
+			} else if (cfg.strict_enforcement) {
+				ipv4_error = 0;
+				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
+				sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
+				ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+					ipv4_error = 1;
 			}
 	
 			if (cfg.ipv6_enabled && dev6) {
@@ -721,18 +730,22 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						ipv6_error = 1;
 				}
 	
-				let idata6 = get_interface(iface);
-				nft.ensure_mark_chain(mark, idata6.chain_name);
-	
 				let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
 				if (+dscp >= 1 && +dscp <= 63) {
 					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-						pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata6.chain_name);
+						pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
 				}
 				if (iface == cfg.icmp_interface) {
 					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-						pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata6.chain_name);
+						pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
 				}
+			} else if (cfg.ipv6_enabled && cfg.strict_enforcement) {
+				ipv6_error = 0;
+				sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
+				sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
+				ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+					ipv6_error = 1;
 			}
 	
 			return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
@@ -782,6 +795,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 						ipv4_error = 1;
 				}
+			} else if (cfg.strict_enforcement) {
+				ipv4_error = 0;
+				sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
+				sh.ip('-4', 'route', 'flush', 'table', tid);
+				ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+					ipv4_error = 1;
 			}
 			if (cfg.ipv6_enabled && dev6) {
 				ipv6_error = 0;
@@ -812,6 +832,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 						ipv6_error = 1;
 				}
+			} else if (cfg.ipv6_enabled && cfg.strict_enforcement) {
+				ipv6_error = 0;
+				sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
+				sh.ip('-6', 'route', 'flush', 'table', tid);
+				ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+					ipv6_error = 1;
 			}
 			return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
 		}
@@ -2021,7 +2048,17 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					let masked = replace(m[4], /[^\s.\x27]/g, '*');
 					printf('%s%s%s%s\n', m[1], m[2], m[3], masked);
 				} else {
-					printf('%s\n', line);
+					let masked_line = line;
+					if (!match(line, /^\s*(option|list)\s+allowed_ips\s+/)) {
+						masked_line = replace(masked_line, /([0-9]{1,3}\.){3}[0-9]{1,3}/g, function(ip) {
+							if (match(ip, /^(10\.|127\.|192\.168\.)/) ||
+							    match(ip, /^172\.(1[6-9]|2[0-9]|3[01])\./))
+								return ip;
+							return replace(ip, /[0-9]/g, '*');
+						});
+						masked_line = replace(masked_line, /([a-fA-F0-9]{2,}:){1,7}[a-fA-F0-9]{2,}/g, '***');
+					}
+					printf('%s\n', masked_line);
 				}
 			}
 		}
