@@ -691,7 +691,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
 						pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
 				}
-			} else if (cfg.strict_enforcement) {
+			} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
 				ipv4_error = 0;
 				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
 				sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
@@ -739,7 +739,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
 						pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
 				}
-			} else if (cfg.ipv6_enabled && cfg.strict_enforcement) {
+			} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
 				ipv6_error = 0;
 				sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
 				sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
@@ -795,7 +795,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 						ipv4_error = 1;
 				}
-			} else if (cfg.strict_enforcement) {
+			} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
 				ipv4_error = 0;
 				sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
 				sh.ip('-4', 'route', 'flush', 'table', tid);
@@ -832,7 +832,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 						ipv6_error = 1;
 				}
-			} else if (cfg.ipv6_enabled && cfg.strict_enforcement) {
+			} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
 				ipv6_error = 0;
 				sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
 				sh.ip('-6', 'route', 'flush', 'table', tid);
