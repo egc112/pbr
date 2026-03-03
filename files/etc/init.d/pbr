@@ -40,23 +40,8 @@ readonly _ucode="ucode -S -L /lib/${packageName} -L /lib/mwan4 /lib/${packageNam
 # shellcheck disable=SC1091
 . "${IPKG_INSTROOT}/usr/share/libubox/jshn.sh"
 
-stop_forward() {
-	local strict_enforcement
-	config_load "$packageName"
-	config_get_bool strict_enforcement 'config' 'strict_enforcement' '1'
-	if [ "$strict_enforcement" = '1' ] && [ "$(cat /proc/sys/net/ipv4/ip_forward)" != "0" ]; then
-		/sbin/sysctl -w net.ipv4.ip_forward=0 >/dev/null 2>&1
-		/sbin/sysctl -w net.ipv6.conf.all.forwarding=0 >/dev/null 2>&1
-		printf 'Forwarding is disabled\n'
-	fi
-}
-enable_forward() {
-	if [ "$(cat /proc/sys/net/ipv4/ip_forward)" != "1" ]; then
-		/sbin/sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
-		/sbin/sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
-		printf 'Forwarding is enabled\n'
-	fi
-}
+stop_forward() { $_ucode stop_forward; }
+enable_forward() { $_ucode enable_forward; }
 
 boot() { touch "/var/run/${packageName}.boot"; rc_procd start_service 'on_boot' && service_started 'on_boot'; }
 # shellcheck disable=SC2120
@@ -83,10 +68,7 @@ restart_service() {
 	stop_forward
 	stop
 	# it takes time before routes are cleaned up, if started immediately a leak can occur
-	local strict_enforcement
-	config_load "$packageName"
-	config_get_bool strict_enforcement 'config' 'strict_enforcement' '1'
-	[ "$strict_enforcement" = '1' ] && sleep 2
+	[ "$(cat /proc/sys/net/ipv4/ip_forward)" = "0" ] && sleep 2
 	rc_procd start_service 'on_restart'
 }
 status_service() { $_ucode status_service "$@"; }

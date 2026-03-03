@@ -79,8 +79,28 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		return iface_registry[iface_key];
 	}
 	
+	// ── Forwarding Control ──────────────────────────────────────────────
+
+	function stop_forward() {
+		load_config();
+		if (!cfg.strict_enforcement) return;
+		let cur = trim(_fs.readfile('/proc/sys/net/ipv4/ip_forward') || '');
+		if (cur == '0') return;
+		sh.run('/sbin/sysctl -w net.ipv4.ip_forward=0');
+		sh.run('/sbin/sysctl -w net.ipv6.conf.all.forwarding=0');
+		output.print('Forwarding is disabled\\n');
+	}
+
+	function enable_forward() {
+		let cur = trim(_fs.readfile('/proc/sys/net/ipv4/ip_forward') || '');
+		if (cur == '1') return;
+		sh.run('/sbin/sysctl -w net.ipv4.ip_forward=1');
+		sh.run('/sbin/sysctl -w net.ipv6.conf.all.forwarding=1');
+		output.print('Forwarding is enabled\\n');
+	}
+
 	// ── Config / Environment Loading ────────────────────────────────────
-	
+
 	function load_config() {
 		if (_config_loaded) return;
 		config.load(sh);
@@ -2158,6 +2178,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		get_supported_interfaces,
 		service_started,
 		emit_procd_shell,
+		stop_forward,
+		enable_forward,
 	};
 }
 

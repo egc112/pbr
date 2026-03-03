@@ -44,6 +44,14 @@ case 'service_started':
 	pbr.service_started(ARGV[0]);
 	break;
 
+case 'stop_forward':
+	pbr.stop_forward();
+	break;
+
+case 'enable_forward':
+	pbr.enable_forward();
+	break;
+
 default:
 	warn('Unknown action: ' + (action || '(none)') + '\n');
 	exit(1);
