@@ -79,6 +79,19 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		return iface_registry[iface_key];
 	}
 	
+	// ── Config / Environment Loading ────────────────────────────────────
+
+	function load_config() {
+		if (_config_loaded) return;
+		config.load(sh);
+		let is_tty = system('[ -t 2 ]') == 0;
+		output.set_state({ is_tty: is_tty, verbosity: cfg.verbosity,
+			uci_getter: () => cfg.debug_performance });
+		platform.detect_agh_config();
+		_loaded = false;
+		_config_loaded = true;
+	}
+
 	// ── Forwarding Control ──────────────────────────────────────────────
 
 	function stop_forward() {
@@ -97,19 +110,6 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		sh.run('/sbin/sysctl -w net.ipv4.ip_forward=1');
 		sh.run('/sbin/sysctl -w net.ipv6.conf.all.forwarding=1');
 		output.print('Forwarding is enabled\\n');
-	}
-
-	// ── Config / Environment Loading ────────────────────────────────────
-
-	function load_config() {
-		if (_config_loaded) return;
-		config.load(sh);
-		let is_tty = system('[ -t 2 ]') == 0;
-		output.set_state({ is_tty: is_tty, verbosity: cfg.verbosity,
-			uci_getter: () => cfg.debug_performance });
-		platform.detect_agh_config();
-		_loaded = false;
-		_config_loaded = true;
 	}
 	
 	function _check_system_health() {
