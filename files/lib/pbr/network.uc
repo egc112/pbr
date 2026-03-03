@@ -53,16 +53,24 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		return ctx.get('network', iface, 'proto') || null;
 	}
 
+	function uci_get_device(iface) {
+		let ctx = config.uci_ctx('network');
+		return ctx.get('network', iface, 'device') || ctx.get('network', iface, 'dev') || null;
+	}
+
 	// ── Protocol Detectors ──────────────────────────────────────────
 
 	function is_dslite(iface) { let _p = network_get_protocol(iface); return _p != null && substr(_p, 0, 6) == 'dslite'; }
 	function is_l2tp(iface) { let _p = network_get_protocol(iface); return _p != null && substr(_p, 0, 4) == 'l2tp'; }
 	function is_oc(iface) { let _p = network_get_protocol(iface); return _p != null && substr(_p, 0, 11) == 'openconnect'; }
 	function is_ovpn(iface) {
-		let d = config.uci_ctx('network').get('network', iface, 'device');
-		if (!d) return false;
-		if (substr(d, 0, 3) == 'tun' || substr(d, 0, 3) == 'tap') return true;
-		return stat('/sys/devices/virtual/net/' + d + '/tun_flags')?.type != null;
+		let ctx = config.uci_ctx('network');
+		let d = ctx.get('network', iface, 'device') || ctx.get('network', iface, 'dev');
+		let p = network_get_protocol(iface);
+		if (d && (substr(d, 0, 3) == 'tun' || substr(d, 0, 3) == 'tap')) return true;
+		if (p && substr(p, 0, 7) == 'openvpn') return true;
+		if (d && stat('/sys/devices/virtual/net/' + d + '/tun_flags')?.type != null) return true;
+		return false;
 	}
 	function is_pptp(iface) { let _p = network_get_protocol(iface); return _p != null && substr(_p, 0, 4) == 'pptp'; }
 	function is_softether(iface) { let d = network_get_device(iface); return d != null && substr(d, 0, 4) == 'vpn_'; }
@@ -245,6 +253,7 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		network_get_gateway,
 		network_get_gateway6,
 		network_get_protocol,
+		uci_get_device,
 		is_dslite, is_l2tp, is_oc, is_ovpn, is_pptp,
 		is_softether, is_netbird, is_tailscale,
 		is_wg, is_wg_server, is_tor, is_xray, is_tunnel,

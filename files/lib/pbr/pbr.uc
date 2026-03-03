@@ -867,8 +867,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				return;
 			}
 	
-			let dev4 = net.network_get_device(iface);
-			if (!dev4) dev4 = net.network_get_physdev(iface);
+			let dev4;
+			if (net.is_ovpn(iface)) {
+				dev4 = net.uci_get_device(iface);
+			} else {
+				dev4 = net.network_get_device(iface);
+				if (!dev4) dev4 = net.network_get_physdev(iface);
+			}
 			let dev6 = null;
 			if (net.is_uplink4(iface) && cfg.uplink_interface6) {
 				dev6 = net.network_get_device(cfg.uplink_interface6);
