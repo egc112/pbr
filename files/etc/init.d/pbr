@@ -2226,6 +2226,13 @@ interface_routing() {
 				sync
 			fi
 
+			# Create the nft mark chain before any DSCP/ICMP rules that goto it
+			if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${mark}"; then
+				nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}"
+				nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
+				nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return"
+			fi
+
 			if [ -n "$dev4" ]; then
 				ipv4_error=0
 				ip -4 rule flush table "$tid" >/dev/null 2>&1
@@ -2291,13 +2298,6 @@ interface_routing() {
 				ip -6 route flush table "$tid" >/dev/null 2>&1
 				try ip -6 route replace unreachable default table "$tid" || ipv6_error=1
 				try ip -6 rule replace fwmark "${mark}/${fw_mask}" table "$tid" priority "$priority" || ipv6_error=1
-			fi
-
-			# Always create the nft mark chain so policies can reference it
-			if ! nft_file 'match' 'temp' "${nftPrefix}_mark_${mark}"; then
-				nft add chain inet "$nftTable" "${nftPrefix}_mark_${mark}"
-				nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} ${nftRuleParams} meta mark set (meta mark & ${fw_maskXor}) | ${mark}"
-				nft add rule inet "$nftTable" "${nftPrefix}_mark_${mark} return"
 			fi
 
 			if [ "$ipv4_error" -eq '0' ] || [ "$ipv6_error" -eq '0' ]; then
