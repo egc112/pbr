@@ -688,7 +688,23 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			// even when the interface device is not yet available (e.g. a down WireGuard tunnel)
 			let idata = get_interface(iface);
 			nft.ensure_mark_chain(mark, idata.chain_name);
-	
+
+			let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
+			if (+dscp >= 1 && +dscp <= 63) {
+				nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
+					pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
+				if (cfg.ipv6_enabled)
+					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
+						pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
+			}
+			if (iface == cfg.icmp_interface) {
+				nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
+					pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
+				if (cfg.ipv6_enabled)
+					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
+						pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
+			}
+
 			if (dev4) {
 				ipv4_error = 0;
 				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
@@ -700,16 +716,6 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
 					if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 						ipv4_error = 1;
-				}
-	
-				let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
-				if (+dscp >= 1 && +dscp <= 63) {
-					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-						pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
-				}
-				if (iface == cfg.icmp_interface) {
-					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-						pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
 				}
 			} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
 				ipv4_error = 0;
@@ -748,16 +754,6 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					}
 					if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 						ipv6_error = 1;
-				}
-	
-				let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
-				if (+dscp >= 1 && +dscp <= 63) {
-					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-						pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
-				}
-				if (iface == cfg.icmp_interface) {
-					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-						pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
 				}
 			} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
 				ipv6_error = 0;
