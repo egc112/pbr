@@ -1349,8 +1349,8 @@ resolver() {
 				store_hash) return 0;;
 				wait)
 					[ -n "$resolverWorkingFlag" ] && return 0
-					local timeout="${iface:-30}" count=0
-					local hostname="$(uci_get 'system' '@system[0]' 'hostname' 'OpenWrt')"
+					local timeout="${iface:-30}" count=0 hostname
+					hostname="$(uci_get 'system' '@system[0]' 'hostname' 'OpenWrt')"
 					while [ "$count" -lt "$timeout" ]; do
 						if resolveip "$hostname" >/dev/null 2>&1; then
 							resolverWorkingFlag='true'
@@ -1448,8 +1448,8 @@ resolver() {
 				;;
 				wait)
 					[ -n "$resolverWorkingFlag" ] && return 0
-					local timeout="${iface:-30}" count=0
-					local hostname="$(uci_get 'system' '@system[0]' 'hostname' 'OpenWrt')"
+					local timeout="${iface:-30}" count=0 hostname
+					hostname="$(uci_get 'system' '@system[0]' 'hostname' 'OpenWrt')"
 					while [ "$count" -lt "$timeout" ]; do
 						if resolveip "$hostname" >/dev/null 2>&1; then
 							resolverWorkingFlag='true'
@@ -2478,7 +2478,8 @@ process_interface() {
 	if is_wg_server "$iface" && ! is_ignored_interface "$iface"; then
 		case "$action" in
 			destroy)
-				local listen_port="$(uci_get 'network' "$iface" 'listen_port')"
+				local listen_port
+				listen_port="$(uci_get 'network' "$iface" 'listen_port')"
 				if [ -n "$listen_port" ]; then
 					ip rule del sport "$listen_port" table "pbr_${uplink_interface4}" >/dev/null 2>&1
 					ip -6 rule del sport "$listen_port" table "pbr_${uplink_interface4}" >/dev/null 2>&1
