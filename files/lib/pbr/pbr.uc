@@ -710,7 +710,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
 				sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
 				if (gw4 || cfg.strict_enforcement) {
-					if (!gw4)
+					if (!gw4 && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev4)), 'POINTOPOINT') >= 0)
+						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'dev', dev4, 'table', tid) ? 0 : 1;
+					else if (!gw4)
 						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
 					else
 						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
@@ -725,13 +727,15 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 					ipv4_error = 1;
 			}
-	
+
 			if (cfg.ipv6_enabled && dev6) {
 				ipv6_error = 0;
 				sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
 				sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
 				if ((gw6 && gw6 != '::/0') || cfg.strict_enforcement) {
-					if (!gw6 || gw6 == '::/0')
+					if ((!gw6 || gw6 == '::/0') && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev6)), 'POINTOPOINT') >= 0)
+						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
+					else if (!gw6 || gw6 == '::/0')
 						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
 					else {
 						let route_check = sh.exec(pkg.ip_full + ' -6 route list table main');
@@ -804,7 +808,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
 				sh.ip('-4', 'route', 'flush', 'table', tid);
 				if (gw4 || cfg.strict_enforcement) {
-					if (!gw4)
+					if (!gw4 && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev4)), 'POINTOPOINT') >= 0)
+						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'dev', dev4, 'table', tid) ? 0 : 1;
+					else if (!gw4)
 						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
 					else
 						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
@@ -824,7 +830,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
 				sh.ip('-6', 'route', 'flush', 'table', tid);
 				if ((gw6 && gw6 != '::/0') || cfg.strict_enforcement) {
-					if (!gw6 || gw6 == '::/0')
+					if ((!gw6 || gw6 == '::/0') && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev6)), 'POINTOPOINT') >= 0)
+						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
+					else if (!gw6 || gw6 == '::/0')
 						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
 					else {
 						let route_check = sh.exec(pkg.ip_full + ' -6 route list table main');
