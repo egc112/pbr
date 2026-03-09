@@ -1952,10 +1952,15 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		}
 
 		// Verbose output (existing detailed diagnostics)
+		// Use sh.exec()+printf() instead of system() to avoid stdout buffering
+		// interleaving when output is redirected to a file.
+		let _exec_print = function(cmd) {
+			let out = sh.exec(cmd);
+			if (out) printf('%s\n', out);
+		};
 		let board = config.ubus_call('system', 'board', {});
 		let openwrt_release = board?.release?.description || 'unknown';
 
-		let _SEP_ = '===================================';
 		let status_text = pkg.service_name + ' on ' + openwrt_release + '.\\n';
 
 		if (cfg.uplink_interface4) {
@@ -1976,56 +1981,50 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				(dev6 ? '/' + dev6 : '') + '/' + (env.uplink_gw6 || '::/0') + '.\\n';
 		}
 
-		printf('%s\n', _SEP_);
-		printf('%s - environment\n', pkg.name);
+		printf('===== %s - environment =====\n', pkg.name);
 		printf('%s', replace(status_text, /\\n/g, '\n'));
-		printf('%s\n', _SEP_);
-		system("dnsmasq --version 2>/dev/null | sed '/^$/,$d'");
+		printf('===== dnsmasq version =====\n');
+		_exec_print("dnsmasq --version 2>/dev/null | sed '/^$/,$d'");
 
 		if (nft.nft_file.exists('netifd')) {
-			printf('%s\n', _SEP_);
+			printf('===== %s nft netifd file =====\n', pkg.name);
 			let netifd_content = nft.nft_file.show('netifd');
 			if (netifd_content) printf('%s', netifd_content);
 		}
 		if (nft.nft_file.exists('main')) {
-			printf('%s\n', _SEP_);
+			printf('===== %s nft main file =====\n', pkg.name);
 			let main_content = nft.nft_file.show('main');
 			if (main_content) printf('%s', main_content);
 		}
 
-		printf('%s\n', _SEP_);
-		printf('%s chains - policies\n', pkg.name);
+		printf('===== %s chains - policies =====\n', pkg.name);
 		for (let ch in split(pkg.chains_list + ' dstnat', /\s+/)) {
-			system('nft -a list table inet ' + pkg.nft_table +
+			_exec_print('nft -a list table inet ' + pkg.nft_table +
 				" | sed -n '/chain " + pkg.nft_prefix + '_' + ch + " {/,/\\t}/p'");
 		}
 
-		printf('%s\n', _SEP_);
-		printf('%s chains - marking\n', pkg.name);
+		printf('===== %s chains - marking =====\n', pkg.name);
 		let mark_chains = nft.get_mark_nft_chains();
 		for (let mc in split(mark_chains, /\s+/)) {
 			if (!mc) continue;
-			system('nft -a list table inet ' + pkg.nft_table +
+			_exec_print('nft -a list table inet ' + pkg.nft_table +
 				" | sed -n '/chain " + mc + " {/,/\\t}/p'");
 		}
 
-		printf('%s\n', _SEP_);
-		printf('%s nft sets\n', pkg.name);
+		printf('===== %s nft sets =====\n', pkg.name);
 		let sets = nft.get_nft_sets();
 		for (let ns in split(sets, /\s+/)) {
 			if (!ns) continue;
-			system('nft -a list table inet ' + pkg.nft_table +
+			_exec_print('nft -a list table inet ' + pkg.nft_table +
 				" | sed -n '/set " + ns + " {/,/\\t}/p'");
 		}
 
 		if (stat(pkg.dnsmasq_file)?.size > 0) {
-			printf('%s\n', _SEP_);
-			printf('dnsmasq nft sets in %s\n', pkg.dnsmasq_file);
+			printf('===== dnsmasq nft sets in %s =====\n', pkg.dnsmasq_file);
 			printf('%s', readfile(pkg.dnsmasq_file) || '');
 		}
 
-		printf('%s\n', _SEP_);
-		printf('%s tables & routing\n', pkg.name);
+		printf('===== %s tables & routing =====\n', pkg.name);
 		let rt = readfile(pkg.rt_tables_file) || '';
 		let table_count = 0;
 		for (let l in split(rt, '\n'))
@@ -2042,17 +2041,15 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				}
 			}
 			printf('IPv4 table %s%s routes:\n', tid, status_table ? ' (' + status_table + ')' : '');
-			system(pkg.ip_full + ' -4 route show table ' + tid + " | sed 's/^/    /'");
+			_exec_print(pkg.ip_full + ' -4 route show table ' + tid + " | sed 's/^/    /'");
 			printf('IPv4 table %s%s rules:\n', tid, status_table ? ' (' + status_table + ')' : '');
-			system(pkg.ip_full + ' -4 rule list table ' + tid + " | sed 's/^/    /'");
+			_exec_print(pkg.ip_full + ' -4 rule list table ' + tid + " | sed 's/^/    /'");
 			if (cfg.ipv6_enabled) {
-				printf('%s\n', _SEP_);
-				printf('IPv6 table %s routes:\n', tid);
-				system(pkg.ip_full + ' -6 route show table ' + tid + " | sed 's/^/    /'");
+				printf('===== IPv6 table %s =====\n', tid);
+				_exec_print(pkg.ip_full + ' -6 route show table ' + tid + " | sed 's/^/    /'");
 				printf('IPv6 table %s rules:\n', tid);
-				system(pkg.ip_full + ' -6 rule list table ' + tid + " | sed 's/^/    /'");
+				_exec_print(pkg.ip_full + ' -6 rule list table ' + tid + " | sed 's/^/    /'");
 			}
-			printf('%s\n', _SEP_);
 		}
 	}
 	
@@ -2060,22 +2057,29 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	function support() {
 		let readfile = _fs.readfile;
+		// Use sh.exec()+printf() instead of system() to avoid stdout buffering
+		// interleaving when output is redirected to a file.
+		let _exec_print = function(cmd) {
+			let out = sh.exec(cmd);
+			if (out) printf('%s\n', out);
+		};
+
 		printf('Setting counters and verbosity for diagnostics...\n');
 		let ctx = config.uci_ctx(pkg.name);
 		ctx.set(pkg.name, 'config', 'nft_rule_counter', '1');
 		ctx.set(pkg.name, 'config', 'nft_set_counter', '1');
 		ctx.set(pkg.name, 'config', 'verbosity', '2');
 		ctx.commit(pkg.name);
-	
+
 		for (let cfg_name in ['dhcp', 'firewall', 'network', 'pbr']) {
 			let content = readfile('/etc/config/' + cfg_name);
 			if (!content) continue;
-			printf('\n===== %s config =====\n', cfg_name);
+			printf('===== %s config =====\n', cfg_name);
 			for (let line in split('' + content, '\n')) {
-				let m = match(line, /^(\s*(?:option|list)\s+)(endpoint_host|key|password|preshared_key|private_key|psk|public_key|token|username)(\s+)(.*)/);
+				let m = match(line, /^(\s*(option|list)\s+)(endpoint_host|key|password|preshared_key|private_key|psk|public_key|token|username)(\s+)(.*)/);
 				if (m) {
-					let masked = replace(m[4], /[^\s.\x27]/g, '*');
-					printf('%s%s%s%s\n', m[1], m[2], m[3], masked);
+					let masked = replace(m[5], /[^ \t.\x27]/g, '*');
+					printf('%s%s%s%s\n', m[1], m[3], m[4], masked);
 				} else {
 					let masked_line = line;
 					if (!match(line, /^\s*(option|list)\s+allowed_ips\s+/)) {
@@ -2091,12 +2095,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				}
 			}
 		}
-		printf('\n===== ubus call system board =====\n');
-		system('ubus call system board');
-		printf('\n===== /etc/init.d/pbr restart =====\n');
-		system('/etc/init.d/pbr restart');
-		printf('\n===== /etc/init.d/pbr status -d (after restart) =====\n');
-		system('/etc/init.d/pbr status -d');
+
+		printf('===== ubus call system board =====\n');
+		_exec_print('ubus call system board');
+
+		printf('===== %s status -d =====\n', pkg.name);
+		status_service(['-d']);
 	}
 	
 	// ── rpcd Data Functions ─────────────────────────────────────────────
