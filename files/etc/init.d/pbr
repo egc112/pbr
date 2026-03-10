@@ -2806,11 +2806,12 @@ start_service() {
 
 	[ "$param" = 'on_boot' ] && pbrBootFlag=1 && return 0
 
+	json init
+	load_package_config "$param"
+
 	trap 'enable_forward' EXIT
 	stop_forward
 
-	json init
-	load_package_config "$param"
 	load_environment "${param:-on_start}" "$(load_validate_config)" || return 1
 	output "Processing environment (${param:-on_start}) "
 	if ! is_wan_up "$param"; then
