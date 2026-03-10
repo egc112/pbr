@@ -1719,6 +1719,12 @@ dns_policy_routing() {
 	local dest_dns_ipv4="$6" dest_dns_ipv6="$7"
 	local chain='dstnat' iface='dns'
 
+	if [ -z "$src_addr" ]; then
+		processDnsPolicyError='true'
+		json add error 'errorPolicyNoSrcDest' "$name"
+		return 1
+	fi
+
 	if [ -z "${dest_dns_ipv4}${dest_dns_ipv6}" ]; then
 		processDnsPolicyError='true'
 		json add error 'errorPolicyProcessNoInterfaceDns' "'$dest_dns'"
@@ -1826,6 +1832,12 @@ policy_routing() {
 	chain="$(str_to_lower "$8")"
 	chain="${chain:-prerouting}"
 	mark=$(eval echo "\$mark_${iface//-/_}")
+
+	if [ -z "${src_addr}${dest_addr}${src_port}${dest_port}${proto}" ]; then
+		processPolicyError='true'
+		json add error 'errorPolicyNoSrcDest' "$name"
+		return 1
+	fi
 
 	if [ -z "$ipv6_enabled" ] && \
 		{ is_ipv6 "$(str_first_word "$src_addr")" || is_ipv6 "$(str_first_word "$dest_addr")"; }; then
@@ -2095,10 +2107,6 @@ dns_policy_process() {
 
 	unset processDnsPolicyError
 	output 2 "Routing '$name' DNS to $dest_dns:$dest_dns_port "
-	if [ -z "$src_addr" ]; then
-		json add error 'errorPolicyNoSrcDest' "$name"
-		output_fail; return 1;
-	fi
 	if [ -z "$dest_dns" ]; then
 		json add error 'errorPolicyNoDns' "$name"
 		output_fail; return 1;
@@ -2193,14 +2201,9 @@ policy_process() {
 					if str_contains "$filter_group_src_addr" 'ipv6' && str_contains "$filter_group_dest_addr" 'ipv4'; then
 							continue
 					fi
-					if [ -n "${filtered_value_src_addr}${filtered_value_dest_addr}${src_port}${dest_port}${proto}" ]; then
-						policy_routing "$name" "$interface" "$filtered_value_src_addr" "$src_port" "$filtered_value_dest_addr" "$dest_port" "$proto" "$chain" "$uid"
-						processed_value_src_addr="${processed_value_src_addr:+${processed_value_src_addr} }$filtered_value_src_addr"
-						processed_value_dest_addr="${processed_value_dest_addr:+${processed_value_dest_addr} }$filtered_value_dest_addr"
-					else
-						json add error 'errorPolicyNoSrcDest' "$name"
-						output_fail; return 1;
-					fi
+					policy_routing "$name" "$interface" "$filtered_value_src_addr" "$src_port" "$filtered_value_dest_addr" "$dest_port" "$proto" "$chain" "$uid"
+					processed_value_src_addr="${processed_value_src_addr:+${processed_value_src_addr} }$filtered_value_src_addr"
+					processed_value_dest_addr="${processed_value_dest_addr:+${processed_value_dest_addr} }$filtered_value_dest_addr"
 				fi
 			done
 		fi
