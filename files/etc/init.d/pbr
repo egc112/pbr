@@ -1991,8 +1991,14 @@ policy_routing() {
 			for dest_i in dest_udp_53 dest_tcp_80 dest_udp_80 dest_tcp_443 dest_udp_443; do
 				eval "dest4=\$$dest_i"
 				eval "dest6=\$$dest_i"
-				nft4 "$param4" "$dest4" || ipv4_error='1'
-				nft6 "$param6" "$dest6" || ipv6_error='1'
+				if [ "$filter_group_src_addr" != 'ipv6' ] && [ "$filter_group_src_addr" != 'ipv6_negative' ] && \
+					[ "$filter_group_dest_addr" != 'ipv6' ] && [ "$filter_group_dest_addr" != 'ipv6_negative' ]; then
+					nft4 "$param4" "$dest4" || ipv4_error='1'
+				fi
+				if [ "$filter_group_src_addr" != 'ipv4' ] && [ "$filter_group_src_addr" != 'ipv4_negative' ] && \
+					[ "$filter_group_dest_addr" != 'ipv4' ] && [ "$filter_group_dest_addr" != 'ipv4_negative' ]; then
+					nft6 "$param6" "$dest6" || ipv6_error='1'
+				fi
 				if [ -n "$ipv6_enabled" ] && [ "$ipv4_error" -eq '1' ] && [ "$ipv6_error" -eq '1' ]; then
 					processPolicyError='true'
 					json add error 'errorPolicyProcessInsertionFailed' "$name"
