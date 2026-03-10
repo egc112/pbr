@@ -2786,19 +2786,17 @@ user_file_process() {
 }
 
 boot() {
+	load_package_config 'on_boot'
 	nft_file 'delete' 'main'
+	[ -n "$enabled" ] || return 0
 	rc_procd start_service 'on_boot'
 	service_started 'on_boot'
 }
 
 on_interface_reload() {
-	if ! exists_lockfile; then
-		logger -t "$packageName" "Reload on interface change aborted: service is stopped."
-		return 0
-	else
-		rc_procd start_service 'on_interface_reload' "$1"
-		service_started 'on_interface_reload'
-	fi
+	exists_lockfile || return 1
+	rc_procd start_service 'on_interface_reload' "$1"
+	service_started 'on_interface_reload'
 }
 
 start_service() {
@@ -2807,12 +2805,13 @@ start_service() {
 	local i k
 
 	[ "$param" = 'on_boot' ] && pbrBootFlag=1 && return 0
+
 	trap 'enable_forward' EXIT
 	stop_forward
-	load_package_config "$param"
-	json init
-	load_environment "${param:-on_start}" "$(load_validate_config)" || return 1
 
+	json init
+	load_package_config "$param"
+	load_environment "${param:-on_start}" "$(load_validate_config)" || return 1
 	output "Processing environment (${param:-on_start}) "
 	if ! is_wan_up "$param"; then
 		output_failn
@@ -2965,6 +2964,8 @@ start_service() {
 service_running() { is_service_running; }
 service_started() {
 	local error warning c
+	enable_forward
+	trap - EXIT
 	[ -n "$pbrBootFlag" ] && return 0
 	if nft_file 'exists' 'main'; then
 		resolver 'compare_hash' && resolver 'restart'
@@ -2973,8 +2974,6 @@ service_started() {
 		output "$serviceName FAILED TO START!!!\n"
 		output "Check the output of nft -c -f $nftTempFile\n"
 	fi
-	enable_forward
-	trap - EXIT
 	warning="$(json get warning)"
 	if [ -n "$warning" ]; then
 		for c in $warning; do
