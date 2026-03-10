@@ -706,6 +706,7 @@ process_url() {
 }
 
 load_package_config() {
+	[ -n "$loadPackageConfigFlag" ] && return 0
 	local param="$1"
 	config_load "$packageName"
 	config_get      config_compat             'config' 'config_compat'
@@ -852,7 +853,7 @@ load_environment() {
 	case "$param" in
 		on_boot|on_start)
 			output 1 "Loading environment ($param) "
-			[ -n "$loadPackageConfigFlag" ] || load_package_config "$param"
+			load_package_config "$param"
 			if [ -z "$enabled" ]; then
 				output 1 "$_FAIL_\n"
 				json add error 'errorServiceDisabled'
@@ -874,11 +875,11 @@ load_environment() {
 			output 1 "$_OK_\n"
 		;;
 		on_triggers)
-			[ -n "$loadPackageConfigFlag" ] || load_package_config "$param"
+			load_package_config "$param"
 		;;
 		on_interface_reload|on_reload|on_stop|*)
 			output 1 "Loading environment ($param) "
-			[ -n "$loadPackageConfigFlag" ] || load_package_config "$param"
+			load_package_config "$param"
 			load_network "$param"
 			resolver 'check_support'
 			output 1 "$_OK_\n"
@@ -1618,12 +1619,13 @@ netifd() {
 		fi
 	}
 
-	load_package_config
-	json 'init'
-
 	local _uplinkMark _uplinkPriority _uplinkTableID
 	local action="${1:-install}"
 	local target_iface="$2"
+
+	load_package_config "on_netifd_${action}"
+	json 'init'
+
 	# shellcheck disable=SC2155
 	local lan_priority="$((uplink_ip_rules_priority + 1000))"
 	# shellcheck disable=SC2155
@@ -3079,7 +3081,7 @@ stop_service() {
 }
 
 restart() {
-	load_package_config
+	load_package_config 'on_restart'
 	stop_forward
 	stop
 	# it takes time before routes are cleaned up, if started immediately a leak can occur
