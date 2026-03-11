@@ -180,7 +180,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			if (!cfg.resolver_set) return;
 			let dhcp_option = ctx_dhcp.get('dhcp', iface, 'dhcp_option');
 			if (type(dhcp_option) != 'array') return;
-			let ipaddr = ctx_net.get('network', iface, 'ipaddr') || '';
+			let ipaddr = ctx_net.get('network', iface, 'ipaddr');
+			if (type(ipaddr) == 'array') ipaddr = ipaddr[0];
+			ipaddr ??= '';
 			let ipaddr_base = split(ipaddr, '/')[0];
 			for (let opt in dhcp_option) {
 				let parts = split(opt, ',');
