@@ -461,8 +461,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					'udp dport 443 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-UDP"',
 				];
 				for (let dest_rule in tor_rules) {
-					if (!nft.nft4(p4_base + ' ' + dest_rule)) ipv4_error = true;
-					if (!nft.nft6(p6_base + ' ' + dest_rule)) ipv6_error = true;
+					if (!src_inline_set_ipv4_empty && !dest_inline_set_ipv4_empty) {
+						if (!nft.nft4(p4_base + ' ' + dest_rule)) ipv4_error = true;
+					}
+					if (!src_inline_set_ipv6_empty && !dest_inline_set_ipv6_empty) {
+						if (!nft.nft6(p6_base + ' ' + dest_rule)) ipv6_error = true;
+					}
 					if (cfg.ipv6_enabled && ipv4_error && ipv6_error) {
 						process_policy_error = true;
 						push(state.errors, { code: 'errorPolicyProcessInsertionFailed', info: name });
@@ -580,7 +584,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 		output.verbose.write("Routing '" + name + "' via " + interface_name + ' ');
 	
-		if (!src_addr && !src_port && !dest_addr && !dest_port) {
+		if (!src_addr && !src_port && !dest_addr && !dest_port && !proto) {
 			push(state.errors, { code: 'errorPolicyNoSrcDest', info: name });
 			output.verbose.fail(); return 1;
 		}
@@ -1551,7 +1555,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		config.uci_ctx('network').commit('network');
 		sh.run('sync');
 	
-		output.print('Restarting network (' + action + ') ');
+		output.print('Reloading network and firewall (' + action + ') ');
 		if (sh.run('/etc/init.d/network reload') == 0 && sh.run('/etc/init.d/firewall reload') == 0)
 			output.okbn();
 		else

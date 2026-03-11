@@ -1,6 +1,6 @@
 #!/bin/sh /etc/rc.common
 # Copyright 2017-2026 MOSSDeF, Stan Grishin (stangri@melmac.ca)
-# shellcheck disable=SC2015,SC3043
+# shellcheck disable=SC3043
 
 # shellcheck disable=SC2034
 START=20
@@ -43,11 +43,21 @@ readonly _ucode="ucode -S -L /lib/${packageName} -L /lib/mwan4 /lib/${packageNam
 stop_forward() { $_ucode stop_forward; }
 enable_forward() { $_ucode enable_forward; }
 
-boot() { touch "/var/run/${packageName}.boot"; rc_procd start_service 'on_boot' && service_started 'on_boot'; }
+boot() {
+	local enabled
+	config_load "$packageName"
+	config_get_bool enabled 'config' 'enabled' '0'
+	rm -f /usr/share/nftables.d/ruleset-post/30-pbr.nft
+	[ "$enabled" -gt 0 ] || return 0
+	touch "/var/run/${packageName}.boot"
+	rc_procd start_service 'on_boot'
+	service_started 'on_boot'
+}
 # shellcheck disable=SC2120
 start_service() {
 	local param="${1:-on_start}"
 	[ "$param" = 'on_boot' ] && return 0
+	trap 'enable_forward' EXIT
 	stop_forward
 	# Call ucode to do all work; it returns json_add_* shell commands
 	# shellcheck disable=SC2034
@@ -72,7 +82,12 @@ restart_service() {
 	rc_procd start_service 'on_restart'
 }
 status_service() { $_ucode status_service "$@"; }
-service_started() { [ "$1" = 'on_boot' ] && return 0; $_ucode service_started "$1"; enable_forward; }
+service_started() {
+	[ "$1" = 'on_boot' ] && return 0
+	enable_forward
+	trap - EXIT
+	$_ucode service_started "$1"
+}
 service_triggers() {
 	local procd_boot_trigger_delay procd_reload_delay n
 	config_load "$packageName"
@@ -82,8 +97,11 @@ service_triggers() {
 	if [ -f "/var/run/${packageName}.boot" ]; then
 		rm -f "/var/run/${packageName}.boot"
 		printf 'Setting trigger (on_boot) '
-		procd_add_raw_trigger "interface.*.up" "${procd_boot_trigger_delay}" "/etc/init.d/${packageName}" start && \
-			printf '\033[0;32m\xe2\x9c\x93\033[0m\n' || printf '\033[0;31m\xe2\x9c\x97\033[0m\n'
+		if procd_add_raw_trigger "interface.*.up" "${procd_boot_trigger_delay}" "/etc/init.d/${packageName}" start; then
+			printf '\033[0;32m\xe2\x9c\x93\033[0m\n'
+		else
+			printf '\033[0;31m\xe2\x9c\x97\033[0m\n'
+		fi
 	else
 		PROCD_RELOAD_DELAY=$(( ${procd_reload_delay:-0} * 1000 ))
 		procd_open_validate
@@ -105,12 +123,9 @@ service_triggers() {
 }
 netifd()  { $_ucode netifd "$@"; }
 on_interface_reload() {
-	if [ ! -e "/var/run/${packageName}.lock" ]; then
-		logger -t "$packageName" "Reload on interface change aborted: service is stopped."
-		return 0
-	else
-		rc_procd start_service 'on_interface_reload' "$1"
-	fi
+	[ -e "/var/run/${packageName}.lock" ] || return 1
+	rc_procd start_service 'on_interface_reload' "$1"
+	service_started 'on_interface_reload'
 }
 support() {
 	local _paste=0
