@@ -81,6 +81,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	// ── Config / Environment Loading ────────────────────────────────────
 
+	let _platform_loaded = false;
+	let _network_loaded = false;
+
 	function load_config() {
 		if (_config_loaded) return;
 		config.load(sh);
@@ -89,7 +92,23 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			uci_getter: () => cfg.debug_performance });
 		platform.detect_agh_config();
 		_loaded = false;
+		_platform_loaded = false;
+		_network_loaded = false;
 		_config_loaded = true;
+	}
+
+	function load_platform() {
+		load_config();
+		if (_platform_loaded) return;
+		platform.detect();
+		_platform_loaded = true;
+	}
+
+	function load_network(param) {
+		load_platform();
+		if (_network_loaded) return;
+		net.load(param);
+		_network_loaded = true;
 	}
 
 	// ── Forwarding Control ──────────────────────────────────────────────
@@ -197,7 +216,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				return false;
 			}
 			start_time = time();
-			platform.detect();
+			load_platform();
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Detecting environment took ' + (end_time - start_time) + 's');
 			if (!_check_system_health()) {
@@ -205,12 +224,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				return false;
 			}
 			start_time = time();
-			net.load(param);
+			load_network(param);
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Loading network data took ' + (end_time - start_time) + 's');
 			output.info.okn();
 			break;
-	
+
 		case 'on_stop':
 		case 'on_reload':
 		case 'on_interface_reload':
@@ -220,11 +239,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Loading config took ' + (end_time - start_time) + 's');
 			start_time = time();
-			platform.detect();
+			load_platform();
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Detecting environment took ' + (end_time - start_time) + 's');
 			start_time = time();
-			net.load(param);
+			load_network(param);
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Loading network data took ' + (end_time - start_time) + 's');
 			output.info.okn();
@@ -237,9 +256,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 		case 'rpcd':
 		case 'status':
-			load_config();
-			platform.detect();
-			net.load(param);
+			load_network(param);
 			break;
 		}
 	
@@ -1348,7 +1365,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let readfile = _fs.readfile;
 		let writefile = _fs.writefile;
 	
-		load('netifd');
+		load_config();
 		reset();
 		action = action || 'install';
 	
@@ -1812,7 +1829,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	function service_started(param) {
 		if (param == 'on_boot') return;
 	
-		load('service_started');
+		load_config();
 	
 		let svc_info = config.ubus_call('service', 'list', { name: pkg.name });
 		let svc_data = svc_info?.[pkg.name]?.data;
@@ -2111,7 +2128,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	function get_init_list(name) {
 		name = name || pkg.name;
-		load('rpcd');
+		load_config();
 		let result = {};
 		let enabled = config.uci_ctx(pkg.name).get(pkg.name, 'config', 'enabled') || '0';
 		result[name] = { enabled: (enabled == '1') };
@@ -2155,7 +2172,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	function get_platform_support(name) {
 		name = name || pkg.name;
-		load('rpcd');
+		load_platform();
 		let result = {};
 		result[name] = {
 			nft_installed: env.nft_installed,
@@ -2179,6 +2196,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 
 	return {
 		pkg,
+		load_config,
+		load_platform,
+		load_network,
 		start_service,
 		stop_service,
 		status_service,
