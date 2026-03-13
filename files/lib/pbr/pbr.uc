@@ -1683,11 +1683,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			if (net.is_config_enabled('policy')) {
 				output.info.write('Processing policies ');
 				start_time = time();
-				let uid_counter = 0;
 				config.uci_ctx(pkg.name, true).foreach(pkg.name, 'policy', function(s) {
-					uid_counter++;
 					let p = config.parse_options(s, config.policy_schema);
-					policy_process('' + uid_counter,
+					policy_process(s['.name'],
 						p.enabled, p.name, p.interface, p.src_addr, p.src_port,
 						p.dest_addr, p.dest_port, p.proto, p.chain);
 				});
@@ -1699,11 +1697,9 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			if (net.is_config_enabled('dns_policy')) {
 				output.info.write('Processing dns policies ');
 				start_time = time();
-				let uid_counter = 0;
 				config.uci_ctx(pkg.name, true).foreach(pkg.name, 'dns_policy', function(s) {
-					uid_counter++;
 					let p = config.parse_options(s, config.dns_policy_schema);
-					dns_policy_process('' + uid_counter,
+					dns_policy_process(s['.name'],
 						p.enabled, p.name, p.src_addr, p.dest_dns, p.dest_dns_port);
 				});
 				end_time = time();
@@ -1738,6 +1734,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			nft.nft_file.apply('main');
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Installing nft rules took ' + (end_time - start_time) + 's');
+
+			if (nft.resolver('compare_hash')) nft.resolver('restart');
 			break;
 		}
 	
