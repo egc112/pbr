@@ -4,7 +4,7 @@
 //
 // Platform detection, download helpers, AGH config discovery.
 
-function create_platform(fs_mod, config, sh, pkg) {
+function create_platform(fs_mod, config, sh, pkg, V) {
 	let readfile = fs_mod.readfile;
 	let stat = fs_mod.stat;
 	let unlink = fs_mod.unlink;
@@ -183,7 +183,6 @@ function create_platform(fs_mod, config, sh, pkg) {
 		}
 
 		let result = '';
-		let V = require('validators');
 		if (V.is_url_file(url) && !sh.is_present('curl')) {
 			push(errors, { code: 'errorFileSchemaRequiresCurl', info: url });
 		} else if (V.is_url_https(url) && !dl.https_supported) {
