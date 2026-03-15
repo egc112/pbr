@@ -40,6 +40,10 @@ config_load pbr
 config_foreach _remove_wg_server_client include
 [ -n "$(uci changes pbr)" ] && uci_commit pbr
 
+# Remove deprecated webui_supported_protocol option
+uci -q delete pbr.config.webui_supported_protocol
+[ -n "$(uci changes pbr)" ] && uci_commit pbr
+
 # ── Part 2: NFT resolver setup ───────────────────────────────────────
 
 if [ "$(uci_get 'pbr' 'config' 'resolver_set')" != 'dnsmasq.nftset' ]; then

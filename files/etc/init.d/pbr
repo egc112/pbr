@@ -191,7 +191,6 @@ load_validate_config() {
 		'procd_reload_delay:uinteger:0' \
 		'uplink_interface:network:wan' \
 		'uplink_interface6:network:wan6' \
-		'webui_supported_protocol:list(string)' \
 		'debug_performance:bool:0'\
 		'nft_rule_counter:bool:0'\
 		'nft_set_auto_merge:bool:1'\

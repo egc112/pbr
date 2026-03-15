@@ -22,11 +22,6 @@ config pbr 'config'
 	list ignored_interface 'vpnserver'
 	list lan_device 'br-lan'
 	list resolver_instance '*'
-	list webui_supported_protocol 'all'
-	list webui_supported_protocol 'tcp'
-	list webui_supported_protocol 'udp'
-	list webui_supported_protocol 'tcp udp'
-	list webui_supported_protocol 'icmp'
 
 config include
 	option path '/usr/share/pbr/pbr.user.dnsprefetch'

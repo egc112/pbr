@@ -9,7 +9,7 @@
 const pkg = {
 	name: 'pbr',
 	version: 'dev-test',
-	compat: '30',
+	compat: '31',
 	config_file: '/etc/config/pbr',
 	debug_file: '/var/run/pbr.debug',
 	lock_file: '/var/run/pbr.lock',

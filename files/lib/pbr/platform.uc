@@ -43,6 +43,8 @@ function create_platform(fs_mod, config, sh, pkg, V) {
 		_loaded: false,
 		_detected: false,
 		_network_output_done: false,
+
+		protocols: {},
 	};
 
 	function is_mwan4_installed() {
@@ -110,6 +112,14 @@ function create_platform(fs_mod, config, sh, pkg, V) {
 				}
 			}
 		}
+		// Cache supported protocols from /etc/protocols
+		let proto_content = readfile('/etc/protocols') || '';
+		for (let line in split(proto_content, '\n')) {
+			if (!line || substr(line, 0, 1) == '#') continue;
+			let m = match(line, /^(\S+)/);
+			if (m) env.protocols[lc(m[1])] = true;
+		}
+
 		env._detected = true;
 	}
 

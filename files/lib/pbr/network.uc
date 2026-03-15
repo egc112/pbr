@@ -146,7 +146,10 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		if (cfg.netifd_interface_default6 == iface) return true;
 		return false;
 	}
-	function is_supported_protocol(proto) { return sh.run('grep -qi "^' + sh.quote(proto || '-') + '" /etc/protocols') == 0; }
+	function is_supported_protocol(proto) {
+		if (!proto) return false;
+		return !!env.protocols[lc(proto)];
+	}
 	function is_mwan4_strategy(iface) { return iface && index(iface, 'mwan4_strategy_') == 0; }
 	function is_supported_interface(iface) {
 		if (!iface) return false;

@@ -2159,6 +2159,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			errors: svc_data?.errors || [],
 			warnings: svc_data?.warnings || [],
 			interfaces: env.webui_interfaces,
+			protocols: sort(keys(env.protocols)),
 			platform: {
 				nft_installed: env.nft_installed,
 				adguardhome_installed: env.adguardhome_installed,

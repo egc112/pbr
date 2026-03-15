@@ -25,7 +25,6 @@
 			"ignored_interface": ["vpnserver"],
 			"lan_device": ["br-lan"],
 			"resolver_instance": ["*"],
-			"webui_supported_protocol": ["all", "tcp", "udp", "tcp udp", "icmp"]
 		}
 	],
 	"policy": [
