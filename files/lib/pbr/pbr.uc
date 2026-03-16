@@ -1386,12 +1386,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				return false;
 			}
 			let net_ctx = config.uci_ctx('network', true);
-			if (net_ctx.get('network', cfg.netifd_interface_default, '.type') != 'interface') {
+			if (net_ctx.get('network', cfg.netifd_interface_default) != 'interface') {
 				push(state.errors, { code: 'errorNetifdInvalidGateway4', info: cfg.netifd_interface_default });
 				output.error(get_text('errorNetifdInvalidGateway4', cfg, cfg.netifd_interface_default));
 				return false;
 			}
-			if (cfg.netifd_interface_default6 && net_ctx.get('network', cfg.netifd_interface_default6, '.type') != 'interface') {
+			if (cfg.netifd_interface_default6 && net_ctx.get('network', cfg.netifd_interface_default6) != 'interface') {
 				push(state.errors, { code: 'errorNetifdInvalidGateway6', info: cfg.netifd_interface_default6 });
 				output.error(get_text('errorNetifdInvalidGateway6', cfg, cfg.netifd_interface_default6));
 				return false;
