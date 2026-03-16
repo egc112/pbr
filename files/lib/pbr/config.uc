@@ -44,7 +44,6 @@ function create_config(uci_mod, ubus_mod, pkg) {
 		nft_set_counter:          ['bool', false],
 		nft_set_flags_timeout:    ['bool', false],
 		nft_user_set_counter:     ['bool', false],
-		webui_show_ignore_target: ['bool', false],
 		netifd_enabled:           ['bool', false],
 		debug_performance:        ['bool', false],
 		netifd_strict_enforcement:['bool', false],
