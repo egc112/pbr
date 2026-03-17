@@ -28,7 +28,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	let _ubus = ubus_mod || require('ubus');
 
 	let sh = create_sys(_fs, pkg);
-	let V = create_validators(_fs.stat);
+	let V = create_validators(_fs.lstat);
 	let config = create_config(_uci, _ubus, pkg);
 	let output = create_output(sh, pkg.name, sym);
 	let platform = create_platform(_fs, config, sh, pkg, V);
