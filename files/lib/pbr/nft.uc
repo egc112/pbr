@@ -272,6 +272,11 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 		return false;
 	};
 
+	nft_file.get_content = function() {
+		if (!length(nft_lines)) return null;
+		return '#!/usr/sbin/nft -f\n\n' + join('\n', nft_lines) + '\n';
+	};
+
 	nft_file.apply = function(target) {
 		switch (target) {
 		case 'main': {

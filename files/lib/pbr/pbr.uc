@@ -1366,15 +1366,28 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	function netifd_handler(action, target_iface) {
 		let readfile = _fs.readfile;
 		let writefile = _fs.writefile;
-	
+
 		load_config();
 		reset();
 		action = action || 'install';
-	
+
 		if (action == 'check')
 			return cfg.netifd_enabled == '1';
-	
-		if (action == 'install') {
+
+		let dryrun_dir = '/var/run/pbr-dryrun';
+		let dryrun_net_ctx = null;
+		let rt_file = pkg.rt_tables_file;
+
+		if (action == 'dryrun') {
+			sh.run('rm -rf ' + dryrun_dir);
+			sh.mkdir_p(dryrun_dir);
+			sh.run('cp /etc/config/network ' + dryrun_dir + '/network');
+			dryrun_net_ctx = _uci.cursor(dryrun_dir);
+			dryrun_net_ctx.load('network');
+			rt_file = dryrun_dir + '/rt_tables';
+		}
+
+		if (action == 'install' || action == 'dryrun') {
 			if (!cfg.netifd_strict_enforcement) {
 				push(state.errors, { code: 'errorNetifdMissingOption', info: 'netifd_strict_enforcement' });
 				output.error(get_text('errorNetifdMissingOption', cfg, 'netifd_strict_enforcement'));
@@ -1402,7 +1415,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				cfg.netifd_interface_local = 'lan';
 			}
 		}
-	
+
 		let mark = sprintf('0x%06x', hex(cfg.uplink_mark));
 		let priority = cfg.uplink_ip_rules_priority;
 		let tid = nft.get_rt_tables_non_pbr_next_id();
@@ -1411,11 +1424,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let nft_table = pkg.nft_table;
 		let nft_prefix = pkg.nft_prefix;
 		let rule_params = cfg._nft_rule_params ? ' ' + cfg._nft_rule_params : '';
-	
+
 		nft.nft_file.init('netifd');
 		output.info.write('Netifd extensions ' + action + (target_iface ? ' on ' + target_iface : '') + ' ');
-	
-		let net_ctx = config.uci_ctx('network', true);
+
+		let net_ctx = dryrun_net_ctx || config.uci_ctx('network', true);
 		net_ctx.delete('network', 'main_ipv4');
 		net_ctx.delete('network', 'main_ipv6');
 	
@@ -1431,7 +1444,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			net_ctx.delete('network', rt_name + '_ipv6');
 	
 			if (cfg.netifd_strict_enforcement == '1' && V.str_contains(cfg.netifd_interface_local, iface)) {
-				if (action == 'install') {
+				if (action == 'install' || action == 'dryrun') {
 					if (cfg.netifd_interface_default) {
 						let rule_name = rt_name + '_ipv4';
 						net_ctx.add('network', 'rule', rule_name);
@@ -1477,7 +1490,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				rt_name = 'main';
 	
 			if (!target_iface || target_iface == iface) {
-				if (action == 'install') {
+				if (action == 'install' || action == 'dryrun') {
 					output.verbose.write('Setting up netifd extensions for ' + iface + '... ');
 					if (!net.is_split_uplink() || !net.is_uplink6(iface)) {
 						net_ctx.set('network', iface, 'ip4table', rt_name);
@@ -1499,10 +1512,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					}
 					if (!net.is_split_uplink() || !net.is_uplink6(iface)) {
 						if (rt_name != 'main') {
-							let rt = readfile(pkg.rt_tables_file) || '';
+							let rt = readfile(rt_file) || readfile(pkg.rt_tables_file) || '';
 							let lines = filter(split(rt, '\n'), l => index(l, rt_name) < 0);
 							push(lines, _tid + ' ' + rt_name);
-							writefile(pkg.rt_tables_file, join('\n', lines) + '\n');
+							writefile(rt_file, join('\n', lines) + '\n');
 						}
 						nft.nft_file.filter('temp', _mark);
 					}
@@ -1553,6 +1566,18 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		output.info.newline();
 	
 		switch (action) {
+		case 'dryrun': {
+			let nft_content = nft.nft_file.get_content();
+			if (nft_content)
+				writefile(dryrun_dir + '/pbr-netifd.nft', nft_content);
+			dryrun_net_ctx.commit('network');
+			output.print('Dry run complete. Generated files:\\n');
+			output.print('  Network config: ' + dryrun_dir + '/network\\n');
+			output.print('  NFT rules:      ' + dryrun_dir + '/pbr-netifd.nft\\n');
+			if (_fs.stat(rt_file))
+				output.print('  RT tables:      ' + rt_file + '\\n');
+			return true;
+		}
 		case 'install':
 			nft.nft_file.apply('netifd');
 			if (!target_iface)
@@ -1569,11 +1594,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				nft.nft_file.remove('netifd');
 			break;
 		}
-	
+
 		config.uci_ctx(pkg.name).commit(pkg.name);
 		config.uci_ctx('network').commit('network');
 		sh.run('sync');
-	
+
 		output.print('Reloading network and firewall (' + action + ') ');
 		if (sh.run('/etc/init.d/network reload') == 0 && sh.run('/etc/init.d/firewall reload') == 0)
 			output.okbn();
