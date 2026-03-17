@@ -527,6 +527,7 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 				let lines = split(content, '\n');
 				let new_lines = [];
 				for (let line in lines) {
+					if (line == '') continue;
 					let m = match(line, regexp(pkg.ip_table_prefix + '_(.*)'));
 					if (m) {
 						let table_name = pkg.ip_table_prefix + '_' + m[1];

@@ -699,7 +699,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				let lines = split(rt_content, '\n');
 				let new_lines = [];
 				for (let l in lines) {
-					if (index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
+					if (l != '' && index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
 						push(new_lines, l);
 				}
 				push(new_lines, tid + ' ' + pkg.ip_table_prefix + '_' + table_iface);
@@ -817,7 +817,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			let lines = split(rt, '\n');
 			let new_lines = [];
 			for (let l in lines) {
-				if (index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
+				if (l != '' && index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
 					push(new_lines, l);
 			}
 			writefile(pkg.rt_tables_file, join('\n', new_lines) + '\n');
@@ -1431,13 +1431,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let net_ctx = dryrun_net_ctx || config.uci_ctx('network', true);
 		net_ctx.delete('network', 'main_ipv4');
 		net_ctx.delete('network', 'main_ipv6');
-	
+
 		net_ctx.foreach('network', 'interface', function(s) {
 			let iface = s['.name'];
 			let rt_name = pkg.ip_table_prefix + '_' + iface;
 			if (net.is_split_uplink() && iface == cfg.uplink_interface6)
 				rt_name = pkg.ip_table_prefix + '_' + cfg.uplink_interface4;
-	
+
 			net_ctx.delete('network', iface, 'ip4table');
 			net_ctx.delete('network', iface, 'ip6table');
 			net_ctx.delete('network', rt_name + '_ipv4');
@@ -1447,17 +1447,17 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				if (action == 'install' || action == 'dryrun') {
 					if (cfg.netifd_interface_default) {
 						let rule_name = rt_name + '_ipv4';
-						net_ctx.add('network', 'rule', rule_name);
+						net_ctx.set('network', rule_name, 'rule');
 						net_ctx.set('network', rule_name, 'in', iface);
 						net_ctx.set('network', rule_name, 'lookup', pkg.ip_table_prefix + '_' + cfg.netifd_interface_default);
 						net_ctx.set('network', rule_name, 'priority', '' + lan_priority);
 					}
-					if (cfg.ipv6_enabled && cfg.netifd_interface_default6) {
+					if (cfg.netifd_interface_default6) {
 						let ipv6_lookup = pkg.ip_table_prefix + '_' + cfg.netifd_interface_default6;
 						if (net.is_split_uplink() && cfg.netifd_interface_default6 == cfg.uplink_interface6)
 							ipv6_lookup = pkg.ip_table_prefix + '_' + cfg.uplink_interface4;
 						let rule6_name = rt_name + '_ipv6';
-						net_ctx.add('network', 'rule6', rule6_name);
+						net_ctx.set('network', rule6_name, 'rule6');
 						net_ctx.set('network', rule6_name, 'in', iface);
 						net_ctx.set('network', rule6_name, 'lookup', ipv6_lookup);
 						net_ctx.set('network', rule6_name, 'priority', '' + lan_priority);
@@ -1495,16 +1495,16 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					if (!net.is_split_uplink() || !net.is_uplink6(iface)) {
 						net_ctx.set('network', iface, 'ip4table', rt_name);
 						let rule4 = rt_name + '_ipv4';
-						net_ctx.add('network', 'rule', rule4);
+						net_ctx.set('network', rule4, 'rule');
 						net_ctx.set('network', rule4, 'priority', '' + _priority);
 						net_ctx.set('network', rule4, 'lookup', rt_name);
 						net_ctx.set('network', rule4, 'mark', _mark);
 						net_ctx.set('network', rule4, 'mask', cfg.fw_mask);
 					}
-					if (cfg.ipv6_enabled && (!net.is_split_uplink() || !net.is_uplink4(iface))) {
+					if (!net.is_split_uplink() || !net.is_uplink4(iface)) {
 						net_ctx.set('network', iface, 'ip6table', rt_name);
 						let rule6 = rt_name + '_ipv6';
-						net_ctx.add('network', 'rule6', rule6);
+						net_ctx.set('network', rule6, 'rule6');
 						net_ctx.set('network', rule6, 'priority', '' + _priority);
 						net_ctx.set('network', rule6, 'lookup', rt_name);
 						net_ctx.set('network', rule6, 'mark', _mark);
@@ -1513,7 +1513,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					if (!net.is_split_uplink() || !net.is_uplink6(iface)) {
 						if (rt_name != 'main') {
 							let rt = readfile(rt_file) || readfile(pkg.rt_tables_file) || '';
-							let lines = filter(split(rt, '\n'), l => index(l, rt_name) < 0);
+							let lines = filter(split(rt, '\n'), l => l != '' && index(l, rt_name) < 0);
 							push(lines, _tid + ' ' + rt_name);
 							writefile(rt_file, join('\n', lines) + '\n');
 						}
@@ -1531,7 +1531,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						if (!net.is_split_uplink() || !net.is_uplink6(iface))
 							nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
 								pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + nft_prefix + '_mark_' + _mark);
-						if (cfg.ipv6_enabled && (!net.is_split_uplink() || !net.is_uplink4(iface)))
+						if (!net.is_split_uplink() || !net.is_uplink4(iface))
 							nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
 								pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + nft_prefix + '_mark_' + _mark);
 					}
@@ -1539,7 +1539,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						if (!net.is_split_uplink() || !net.is_uplink6(iface))
 							nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
 								pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + nft_prefix + '_mark_' + _mark);
-						if (cfg.ipv6_enabled && (!net.is_split_uplink() || !net.is_uplink4(iface)))
+						if (!net.is_split_uplink() || !net.is_uplink4(iface))
 							nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
 								pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + nft_prefix + '_mark_' + _mark);
 					}
@@ -1548,7 +1548,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 					output.verbose.write('Removing netifd extensions for ' + iface + '... ');
 					if (rt_name != 'main') {
 						let rt = readfile(pkg.rt_tables_file) || '';
-						let lines = filter(split(rt, '\n'), l => index(l, rt_name) < 0);
+						let lines = filter(split(rt, '\n'), l => l != '' && index(l, rt_name) < 0);
 						writefile(pkg.rt_tables_file, join('\n', lines) + '\n');
 					}
 					nft.nft_file.sed('netifd', "'/" + _mark + "/d'");
