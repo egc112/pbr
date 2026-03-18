@@ -1008,6 +1008,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let nft_prefix = pkg.nft_prefix;
 	
 		if (iface == 'all') {
+			let prio = '' + iface_priority;
 			if (action == 'create_global_rules') {
 				config.uci_ctx('network').foreach('network', 'interface', function(s_iface) {
 					let name = s_iface['.name'];
@@ -1017,29 +1018,29 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 						if (disabled != '1' && listen_port) {
 							if (cfg.uplink_interface4) {
 								let tbl = pkg.ip_table_prefix + '_' + cfg.uplink_interface4;
-								let prio = '' + iface_priority;
 								system(pkg.ip_full + ' -4 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
 								sh.ip('-4', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
 								if (cfg.ipv6_enabled) {
 									system(pkg.ip_full + ' -6 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
 									sh.ip('-6', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
 								}
+								prio = '' + (+prio - 1);
 							}
 						}
 					}
 				});
-				let spl_prio = '' + (int(cfg.uplink_ip_rules_priority) + 1);
-				system(pkg.ip_full + ' -4 rule del priority ' + spl_prio + ' 2>/dev/null');
+				system(pkg.ip_full + ' -4 rule del priority ' + prio + ' 2>/dev/null');
 				system(pkg.ip_full + ' -4 rule del lookup main suppress_prefixlength ' + cfg.prefixlength + ' 2>/dev/null');
 				sh.try_cmd(state.errors, pkg.ip_full, '-4', 'rule', 'add', 'lookup', 'main', 'suppress_prefixlength',
-					'' + cfg.prefixlength, 'pref', spl_prio);
+					'' + cfg.prefixlength, 'pref', prio);
 				if (cfg.ipv6_enabled) {
-					system(pkg.ip_full + ' -6 rule del priority ' + spl_prio + ' 2>/dev/null');
+					system(pkg.ip_full + ' -6 rule del priority ' + prio + ' 2>/dev/null');
 					system(pkg.ip_full + ' -6 rule del lookup main suppress_prefixlength ' + cfg.prefixlength + ' 2>/dev/null');
 					sh.try_cmd(state.errors, pkg.ip_full, '-6', 'rule', 'add', 'lookup', 'main', 'suppress_prefixlength',
-						'' + cfg.prefixlength, 'pref', spl_prio);
+						'' + cfg.prefixlength, 'pref', prio);
 				}
 			}
+			iface_priority = prio;
 			return 0;
 		}
 	
