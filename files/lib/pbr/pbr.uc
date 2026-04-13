@@ -1881,10 +1881,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			else mode = 'dynamic routing tables mode';
 			output.print(pkg.service_name + ' started in ' + mode + '.\\n');
 			let gw_summary = svc_data?.status?.gateways;
-			if (gw_summary) {
-				output.info.write('Gateways:\\n' + gw_summary + '\\n');
-				output.verbose.write('Gateways:\\n' + gw_summary + '\\n');
-			}
+			if (gw_summary)
+				output.verbose.write(pkg.service_name + ' is monitoring interfaces:\\n' + gw_summary + '\\n');
 		} else {
 			output.print(pkg.service_name + ' FAILED TO START!!!\\n');
 			output.print('Check the output of nft -c -f ' + pkg.nft_temp_file + '\\n');

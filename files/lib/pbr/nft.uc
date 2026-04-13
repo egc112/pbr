@@ -781,22 +781,24 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 				return true;
 			case 'reload':
 				if (!env.resolver_set_supported) return false;
+				output.info.write('Reloading dnsmasq ');
 				output.verbose.write('Reloading dnsmasq ');
 				if (sh.run('/etc/init.d/dnsmasq reload') == 0) {
-					output.verbose.okn();
+					output.okn();
 					return true;
 				} else {
-					output.verbose.failn();
+					output.failn();
 					return false;
 				}
 			case 'restart':
 				if (!env.resolver_set_supported) return false;
+				output.info.write('Restarting dnsmasq ');
 				output.verbose.write('Restarting dnsmasq ');
 				if (sh.run('/etc/init.d/dnsmasq restart') == 0) {
-					output.verbose.okn();
+					output.okn();
 					return true;
 				} else {
-					output.verbose.failn();
+					output.failn();
 					return false;
 				}
 			case 'compare_hash': {
