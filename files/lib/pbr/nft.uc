@@ -24,7 +24,7 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 	let dnsmasq_ubus = null;
 
 	// Forward declaration (circular: resolveip_to_nftset → resolver → nftset → resolveip_to_nftset)
-	let resolver;
+	let resolver = {};
 
 	// ── NFT Query Helpers ─────────────────────────────────────────────
 
@@ -93,7 +93,7 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 	// ── Resolve Helpers ───────────────────────────────────────────────
 
 	function resolveip_to_nftset(...args) {
-		resolver('wait');
+		resolver.wait();
 		let out = sh.exec('resolveip ' + join(' ', map(args, (a) => sh.quote(a))));
 		let ips = filter(split(trim(out), '\n'), (l) => length(l) > 0);
 		return join(',', ips);
@@ -367,158 +367,196 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			(target ? '_' + target : '') + (type_val ? '_' + type_val : '') + (uid ? '_' + uid : '');
 	}
 
-	function nftset(command, iface, target, type_val, uid, comment, param) {
+	let nftset = {};
+
+	let _nftset_names = function(iface, target, type_val, uid) {
 		target = target || 'dst';
 		type_val = type_val || 'ip';
-		let mark = param;
+		let n4 = get_set_name(iface, '4', target, type_val, uid);
+		let n6 = get_set_name(iface, '6', target, type_val, uid);
+		if (length(n4) > 255) {
+			push(state.errors, { code: 'errorNftsetNameTooLong', info: n4 });
+			return null;
+		}
+		return { n4, n6, target, type_val };
+	};
+
+	let _nftset_result = function(v4_ok, v6_ok) {
+		if (!cfg.ipv6_enabled) v6_ok = false;
+		return v4_ok || v6_ok;
+	};
+
+	nftset.add = function(iface, target, type_val, uid, param) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let v4_ok = false, v6_ok = false;
+		let nft_table = pkg.nft_table;
+		if (V.is_mac_address(param) || index('' + param, ',') >= 0 || index('' + param, ' ') >= 0) {
+			nft4('add element inet ' + nft_table + ' ' + ns.n4 + ' { ' + param + ' }');
+			v4_ok = true;
+			nft6('add element inet ' + nft_table + ' ' + ns.n6 + ' { ' + param + ' }');
+			v6_ok = true;
+		} else if (V.is_ipv4(param)) {
+			nft4('add element inet ' + nft_table + ' ' + ns.n4 + ' { ' + param + ' }');
+			v4_ok = true;
+		} else if (V.is_ipv6(param)) {
+			nft6('add element inet ' + nft_table + ' ' + ns.n6 + ' { ' + param + ' }');
+			v6_ok = true;
+		} else {
+			let param4 = '', param6 = '';
+			if (ns.target == 'src') {
+				param4 = ipv4_leases_to_nftset(param);
+				param6 = ipv6_leases_to_nftset(param);
+			}
+			if (!param4) param4 = resolveip_to_nftset4(param);
+			if (!param6) param6 = resolveip_to_nftset6(param);
+			if (!param4 && !param6) {
+				push(state.errors, { code: 'errorFailedToResolve', info: param });
+			} else {
+				if (param4) { nft4('add element inet ' + nft_table + ' ' + ns.n4 + ' { ' + param4 + ' }'); v4_ok = true; }
+				if (param6) { nft6('add element inet ' + nft_table + ' ' + ns.n6 + ' { ' + param6 + ' }'); v6_ok = true; }
+			}
+		}
+		return _nftset_result(v4_ok, v6_ok);
+	};
+
+	nftset.add_dnsmasq_element = function(iface, target, type_val, uid, comment, param) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let nft_table = pkg.nft_table;
+		let n6 = cfg.ipv6_enabled ? ns.n6 : '';
+		let entry = 'nftset=/' + param + '/4#inet#' + nft_table + '#' + ns.n4 +
+			(n6 ? ',6#inet#' + nft_table + '#' + n6 : '') +
+			' # ' + comment;
+		let existing = readfile(pkg.dnsmasq_file) || '';
+		if (index(existing, entry) >= 0) return true;
+		let fh = _open(pkg.dnsmasq_file, 'a');
+		if (fh) {
+			fh.write(entry + '\n');
+			fh.close();
+			return _nftset_result(true, false);
+		}
+		return false;
+	};
+
+	nftset.create = function(iface, target, type_val, uid, comment) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let nft_table = pkg.nft_table;
+		let v4_ok = false, v6_ok = false;
+		switch (ns.type_val) {
+		case 'ip':
+		case 'net':
+			nft4('add set inet ' + nft_table + ' ' + ns.n4 + ' { type ipv4_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+			v4_ok = true;
+			nft6('add set inet ' + nft_table + ' ' + ns.n6 + ' { type ipv6_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+			v6_ok = true;
+			break;
+		case 'mac':
+			nft4('add set inet ' + nft_table + ' ' + ns.n4 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+			v4_ok = true;
+			nft6('add set inet ' + nft_table + ' ' + ns.n6 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+			v6_ok = true;
+			break;
+		}
+		return _nftset_result(v4_ok, v6_ok);
+	};
+
+	nftset.create_dnsmasq = function(iface, target, type_val, uid, comment) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let nft_table = pkg.nft_table;
+		nft4('add set inet ' + nft_table + ' ' + ns.n4 + ' { type ipv4_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+		nft6('add set inet ' + nft_table + ' ' + ns.n6 + ' { type ipv6_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+		return _nftset_result(true, true);
+	};
+
+	nftset.create_user = function(iface, target, type_val, uid, comment, mark) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
 		let nft_prefix = pkg.nft_prefix;
 		let nft_table = pkg.nft_table;
-
-		let nftset4 = get_set_name(iface, '4', target, type_val, uid);
-		let nftset6 = get_set_name(iface, '6', target, type_val, uid);
-
-		if (length(nftset4) > 255) {
-			push(state.errors, { code: 'errorNftsetNameTooLong', info: nftset4 });
-			return false;
-		}
-
-		let ipv4_error = true;
-		let ipv6_error = true;
-
-		switch (command) {
-		case 'add':
-			if (V.is_mac_address(param) || index('' + param, ',') >= 0 || index('' + param, ' ') >= 0) {
-				nft4('add element inet ' + nft_table + ' ' + nftset4 + ' { ' + param + ' }');
-				ipv4_error = false;
-				nft6('add element inet ' + nft_table + ' ' + nftset6 + ' { ' + param + ' }');
-				ipv6_error = false;
-			} else if (V.is_ipv4(param)) {
-				nft4('add element inet ' + nft_table + ' ' + nftset4 + ' { ' + param + ' }');
-				ipv4_error = false;
-			} else if (V.is_ipv6(param)) {
-				nft6('add element inet ' + nft_table + ' ' + nftset6 + ' { ' + param + ' }');
-				ipv6_error = false;
-			} else {
-				let param4 = '', param6 = '';
-				if (target == 'src') {
-					param4 = ipv4_leases_to_nftset(param);
-					param6 = ipv6_leases_to_nftset(param);
-				}
-				if (!param4) param4 = resolveip_to_nftset4(param);
-				if (!param6) param6 = resolveip_to_nftset6(param);
-				if (!param4 && !param6) {
-					push(state.errors, { code: 'errorFailedToResolve', info: param });
-				} else {
-					if (param4) { nft4('add element inet ' + nft_table + ' ' + nftset4 + ' { ' + param4 + ' }'); ipv4_error = false; }
-					if (param6) { nft6('add element inet ' + nft_table + ' ' + nftset6 + ' { ' + param6 + ' }'); ipv6_error = false; }
-				}
+		let v4_ok = false, v6_ok = false;
+		switch (ns.type_val) {
+		case 'ip':
+		case 'net':
+			nft4('add set inet ' + nft_table + ' ' + ns.n4 + ' { type ipv4_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+			v4_ok = true;
+			nft6('add set inet ' + nft_table + ' ' + ns.n6 + ' { type ipv6_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
+			v6_ok = true;
+			if (ns.target == 'dst') {
+				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' daddr @' + ns.n4 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' daddr @' + ns.n6 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+			} else if (ns.target == 'src') {
+				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' saddr @' + ns.n4 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' saddr @' + ns.n6 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
 			}
 			break;
-		case 'add_dnsmasq_element': {
-			if (!cfg.ipv6_enabled) nftset6 = '';
-			let entry = 'nftset=/' + param + '/4#inet#' + nft_table + '#' + nftset4 +
-				(nftset6 ? ',6#inet#' + nft_table + '#' + nftset6 : '') +
-				' # ' + comment;
-			let existing = readfile(pkg.dnsmasq_file) || '';
-			if (index(existing, entry) >= 0) return true;
-			let fh = _open(pkg.dnsmasq_file, 'a');
-			if (fh) {
-				fh.write(entry + '\n');
-				fh.close();
-				ipv4_error = false;
-			}
+		case 'mac':
+			nft4('add set inet ' + nft_table + ' ' + ns.n4 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '"; }');
+			v4_ok = true;
+			nft6('add set inet ' + nft_table + ' ' + ns.n6 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '"; }');
+			v6_ok = true;
+			nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + ns.n4 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
+			nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + ns.n6 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
 			break;
 		}
-		case 'create':
-			switch (type_val) {
-			case 'ip':
-			case 'net':
-				nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-				ipv4_error = false;
-				nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-				ipv6_error = false;
-				break;
-			case 'mac':
-				nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-				ipv4_error = false;
-				nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-				ipv6_error = false;
-				break;
+		return _nftset_result(v4_ok, v6_ok);
+	};
+
+	nftset.destroy = function(iface, target, type_val, uid) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let nft_table = pkg.nft_table;
+		let v4_ok = false, v6_ok = false;
+		if (nft_call('delete', 'set', 'inet', nft_table, ns.n4)) v4_ok = true;
+		if (nft_call('delete', 'set', 'inet', nft_table, ns.n6)) v6_ok = true;
+		return _nftset_result(v4_ok, v6_ok);
+	};
+
+	nftset.destroy_user = function(iface, target, type_val, uid, mark) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let nft_prefix = pkg.nft_prefix;
+		let nft_table = pkg.nft_table;
+		let v4_ok = false, v6_ok = false;
+		if (nft_call('delete', 'set', 'inet', nft_table, ns.n4)) v4_ok = true;
+		if (nft_call('delete', 'set', 'inet', nft_table, ns.n6)) v6_ok = true;
+		switch (ns.type_val) {
+		case 'ip':
+		case 'net':
+			if (ns.target == 'dst') {
+				nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv4_flag, 'daddr', '@' + ns.n4, 'goto', nft_prefix + '_mark_' + mark);
+				v4_ok = true;
+				nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv6_flag, 'daddr', '@' + ns.n6, 'goto', nft_prefix + '_mark_' + mark);
+				v6_ok = true;
+			} else if (ns.target == 'src') {
+				nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv4_flag, 'saddr', '@' + ns.n4, 'goto', nft_prefix + '_mark_' + mark);
+				v4_ok = true;
+				nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv6_flag, 'saddr', '@' + ns.n6, 'goto', nft_prefix + '_mark_' + mark);
+				v6_ok = true;
 			}
 			break;
-		case 'create_dnsmasq_set':
-			nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-			ipv4_error = false;
-			nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-			ipv6_error = false;
-			break;
-		case 'create_user_set':
-			switch (type_val) {
-			case 'ip':
-			case 'net':
-				nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ipv4_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-				ipv4_error = false;
-				nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ipv6_addr;' + cfg._nft_set_params + ' comment "' + comment + '";}');
-				ipv6_error = false;
-				if (target == 'dst') {
-					nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' daddr @' + nftset4 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-					nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' daddr @' + nftset6 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-				} else if (target == 'src') {
-					nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv4_flag + ' saddr @' + nftset4 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-					nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' + pkg.nft_ipv6_flag + ' saddr @' + nftset6 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-				}
-				break;
-			case 'mac':
-				nft4('add set inet ' + nft_table + ' ' + nftset4 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '"; }');
-				ipv4_error = false;
-				nft6('add set inet ' + nft_table + ' ' + nftset6 + ' { type ether_addr;' + cfg._nft_set_params + ' comment "' + comment + '"; }');
-				ipv6_error = false;
-				nft4('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + nftset4 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-				nft6('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ether saddr @' + nftset6 + ' ' + cfg._nft_rule_params + ' goto ' + nft_prefix + '_mark_' + mark);
-				break;
-			}
-			break;
-		case 'delete':
-		case 'destroy':
-			if (nft_call('delete', 'set', 'inet', nft_table, nftset4)) ipv4_error = false;
-			if (nft_call('delete', 'set', 'inet', nft_table, nftset6)) ipv6_error = false;
-			break;
-		case 'delete_user_set':
-			if (nft_call('delete', 'set', 'inet', nft_table, nftset4)) ipv4_error = false;
-			if (nft_call('delete', 'set', 'inet', nft_table, nftset6)) ipv6_error = false;
-			switch (type_val) {
-			case 'ip':
-			case 'net':
-				if (target == 'dst') {
-					nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv4_flag, 'daddr', '@' + nftset4, 'goto', nft_prefix + '_mark_' + mark);
-					ipv4_error = false;
-					nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv6_flag, 'daddr', '@' + nftset6, 'goto', nft_prefix + '_mark_' + mark);
-					ipv6_error = false;
-				} else if (target == 'src') {
-					nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv4_flag, 'saddr', '@' + nftset4, 'goto', nft_prefix + '_mark_' + mark);
-					ipv4_error = false;
-					nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', pkg.nft_ipv6_flag, 'saddr', '@' + nftset6, 'goto', nft_prefix + '_mark_' + mark);
-					ipv6_error = false;
-				}
-				break;
-			case 'mac':
-				nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', 'ether', 'saddr', '@' + nftset4, 'goto', nft_prefix + '_mark_' + mark);
-				ipv4_error = false;
-				nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', 'ether', 'saddr', '@' + nftset6, 'goto', nft_prefix + '_mark_' + mark);
-				ipv6_error = false;
-				break;
-			}
-			break;
-		case 'flush':
-		case 'flush_user_set':
-			if (nft_call('flush', 'set', 'inet', nft_table, nftset4)) ipv4_error = false;
-			if (nft_call('flush', 'set', 'inet', nft_table, nftset6)) ipv6_error = false;
+		case 'mac':
+			nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', 'ether', 'saddr', '@' + ns.n4, 'goto', nft_prefix + '_mark_' + mark);
+			v4_ok = true;
+			nft_call('delete', 'rule', 'inet', nft_table, nft_prefix + '_prerouting', 'ether', 'saddr', '@' + ns.n6, 'goto', nft_prefix + '_mark_' + mark);
+			v6_ok = true;
 			break;
 		}
+		return _nftset_result(v4_ok, v6_ok);
+	};
 
-		if (!cfg.ipv6_enabled) ipv6_error = true;
-		return !ipv4_error || !ipv6_error;
-	}
+	nftset.flush = function(iface, target, type_val, uid) {
+		let ns = _nftset_names(iface, target, type_val, uid);
+		if (!ns) return false;
+		let nft_table = pkg.nft_table;
+		let v4_ok = false, v6_ok = false;
+		if (nft_call('flush', 'set', 'inet', nft_table, ns.n4)) v4_ok = true;
+		if (nft_call('flush', 'set', 'inet', nft_table, ns.n6)) v6_ok = true;
+		return _nftset_result(v4_ok, v6_ok);
+	};
+
 
 	// ── cleanup ───────────────────────────────────────────────────────
 
@@ -625,228 +663,306 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 
 	// ── resolver ──────────────────────────────────────────────────────
 
-	resolver = function(param, iface, target, type_val, uid, name, value) {
-		let _uci_has_changes = function(conf) {
-			return length(config.uci_ctx(conf).changes(conf) || []) > 0;
-		};
+	resolver._uci_has_changes = function(conf) {
+		return length(config.uci_ctx(conf).changes(conf) || []) > 0;
+	};
 
-		let _uci_add_list_if_new = function(conf, section, option, val) {
-			if (!conf || !section || !option || !val) return false;
-			let ctx = config.uci_ctx(conf);
-			let current = ctx.get(conf, section, option);
-			if (type(current) == 'array' && index(current, val) >= 0) return true;
-			if (current == val) return true;
-			ctx.list_append(conf, section, option, val);
-			ctx.save(conf);
-			return true;
-		};
+	resolver._uci_add_list_if_new = function(conf, section, option, val) {
+		if (!conf || !section || !option || !val) return false;
+		let ctx = config.uci_ctx(conf);
+		let current = ctx.get(conf, section, option);
+		if (type(current) == 'array' && index(current, val) >= 0) return true;
+		if (current == val) return true;
+		ctx.list_append(conf, section, option, val);
+		ctx.save(conf);
+		return true;
+	};
 
-		let _dnsmasq_get_confdir = function(instance) {
-			let ctx = config.uci_ctx('dhcp');
-			let dhcp_cfg = ctx.get('dhcp', instance) ? instance : null;
-			if (!dhcp_cfg) {
-				ctx.foreach('dhcp', 'dnsmasq', function(s) {
-					if (s['.name'] == instance || s['.index'] == instance)
-						dhcp_cfg = s['.name'];
-				});
-			}
-			if (!dnsmasq_ubus)
-				dnsmasq_ubus = config.ubus_call('service', 'list', { name: 'dnsmasq' });
-			let cfg_file = null;
-			if (dnsmasq_ubus?.dnsmasq?.instances?.[dhcp_cfg]?.command) {
-				let cmd_parts = dnsmasq_ubus.dnsmasq.instances[dhcp_cfg].command;
-				if (type(cmd_parts) == 'array') {
-					for (let i = 0; i < length(cmd_parts); i++) {
-						if (cmd_parts[i] == '-C' && i + 1 < length(cmd_parts)) {
-							cfg_file = cmd_parts[i + 1];
-							break;
-						}
+	resolver._dnsmasq_get_confdir = function(instance) {
+		let ctx = config.uci_ctx('dhcp');
+		let dhcp_cfg = ctx.get('dhcp', instance) ? instance : null;
+		if (!dhcp_cfg) {
+			ctx.foreach('dhcp', 'dnsmasq', function(s) {
+				if (s['.name'] == instance || s['.index'] == instance)
+					dhcp_cfg = s['.name'];
+			});
+		}
+		if (!dnsmasq_ubus)
+			dnsmasq_ubus = config.ubus_call('service', 'list', { name: 'dnsmasq' });
+		let cfg_file = null;
+		if (dnsmasq_ubus?.dnsmasq?.instances?.[dhcp_cfg]?.command) {
+			let cmd_parts = dnsmasq_ubus.dnsmasq.instances[dhcp_cfg].command;
+			if (type(cmd_parts) == 'array') {
+				for (let i = 0; i < length(cmd_parts); i++) {
+					if (cmd_parts[i] == '-C' && i + 1 < length(cmd_parts)) {
+						cfg_file = cmd_parts[i + 1];
+						break;
 					}
 				}
 			}
-			if (!cfg_file) return null;
-			let content = readfile(cfg_file) || '';
-			let m = match(content, /(^|\n)conf-dir=([^\n]*)/);
-			return m ? m[2] : null;
-		};
+		}
+		if (!cfg_file) return null;
+		let content = readfile(cfg_file) || '';
+		let m = match(content, /(^|\n)conf-dir=([^\n]*)/);
+		return m ? m[2] : null;
+	};
 
-		let _dnsmasq_instance_cleanup = function(instance) {
-			if (!stat('/etc/config/dhcp')?.type) return true;
-			let ctx = config.uci_ctx('dhcp');
-			if (!ctx.get('dhcp', instance)) return false;
-			let confdir = _dnsmasq_get_confdir(instance);
-			if (confdir) unlink(confdir + '/' + pkg.name);
-			let current = ctx.get('dhcp', instance, 'addnmount');
-			if (type(current) == 'array') {
-				let idx = index(current, pkg.dnsmasq_file);
-				if (idx >= 0) {
-					ctx.reorder('dhcp', instance, idx);
-					ctx.delete('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
-					ctx.save('dhcp');
-				}
+	resolver._dnsmasq_instance_cleanup = function(instance) {
+		if (!stat('/etc/config/dhcp')?.type) return true;
+		let ctx = config.uci_ctx('dhcp');
+		if (!ctx.get('dhcp', instance)) return false;
+		let confdir = resolver._dnsmasq_get_confdir(instance);
+		if (confdir) unlink(confdir + '/' + pkg.name);
+		let current = ctx.get('dhcp', instance, 'addnmount');
+		if (type(current) == 'array') {
+			let idx = index(current, pkg.dnsmasq_file);
+			if (idx >= 0) {
+				ctx.reorder('dhcp', instance, idx);
+				ctx.delete('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
+				ctx.save('dhcp');
 			}
-			return true;
-		};
+		}
+		return true;
+	};
 
-		let _dnsmasq_instance_setup = function(instance) {
-			if (!stat('/etc/config/dhcp')?.type) return true;
-			let ctx = config.uci_ctx('dhcp');
-			if (!ctx.get('dhcp', instance)) return false;
-			_uci_add_list_if_new('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
-			let confdir = _dnsmasq_get_confdir(instance);
-			if (!confdir) return false;
-			sh.run('ln -sf ' + sh.quote(pkg.dnsmasq_file) + ' ' + sh.quote(confdir + '/' + pkg.name));
-			sh.run('chmod 660 ' + sh.quote(confdir + '/' + pkg.name));
-			sh.run('chown -h root:dnsmasq ' + sh.quote(confdir + '/' + pkg.name));
-			return true;
-		};
+	resolver._dnsmasq_instance_setup = function(instance) {
+		if (!stat('/etc/config/dhcp')?.type) return true;
+		let ctx = config.uci_ctx('dhcp');
+		if (!ctx.get('dhcp', instance)) return false;
+		resolver._uci_add_list_if_new('dhcp', instance, 'addnmount', pkg.dnsmasq_file);
+		let confdir = resolver._dnsmasq_get_confdir(instance);
+		if (!confdir) return false;
+		sh.run('ln -sf ' + sh.quote(pkg.dnsmasq_file) + ' ' + sh.quote(confdir + '/' + pkg.name));
+		sh.run('chmod 660 ' + sh.quote(confdir + '/' + pkg.name));
+		sh.run('chown -h root:dnsmasq ' + sh.quote(confdir + '/' + pkg.name));
+		return true;
+	};
 
+	resolver.check_support = function() {
 		switch (cfg.resolver_set) {
 		case '':
 		case 'none':
-			switch (param) {
-			case 'add_resolver_element': return false;
-			case 'create_resolver_set': return false;
-			case 'check_support': return true;
-			case 'cleanup': return true;
-			case 'configure': return true;
-			case 'kill': return true;
-			case 'reload': return true;
-			case 'restart': return true;
-			case 'compare_hash': return true;
-			case 'store_hash': return true;
-			case 'wait': {
-				if (resolver_working_flag) return true;
-				let timeout = +(iface || '30');
-				let hostname = config.uci_ctx('system').get('system', '@system[0]', 'hostname') || 'OpenWrt';
-				for (let count = 0; count < timeout; count++) {
-					if (sh.run('resolveip ' + sh.quote(hostname)) == 0) {
-						resolver_working_flag = true;
-						return true;
-					}
-					system('sleep 1');
-				}
-				return false;
-			}
-			}
-			break;
-
+			return true;
 		case 'dnsmasq.nftset':
-			switch (param) {
-			case 'add_resolver_element':
-				if (!env.resolver_set_supported) return false;
-				if (target == 'src') return false;
-				let words = split(trim('' + (value || '')), /\s+/);
-				for (let d in words) {
-					nftset('add_dnsmasq_element', iface, target, type_val, uid, name, d);
-				}
-				return true;
-			case 'create_resolver_set':
-				if (!env.resolver_set_supported) return false;
-				if (target == 'src') return false;
-				return nftset('create_dnsmasq_set', iface, target, type_val, uid, name, value);
-			case 'check_support':
-				return env.resolver_set_supported;
-			case 'cleanup':
-				if (!env.resolver_set_supported) return false;
-				unlink(pkg.dnsmasq_file);
-				let ctx_dhcp = config.uci_ctx('dhcp', true);
-				ctx_dhcp.foreach('dhcp', 'dnsmasq', function(s) {
-					_dnsmasq_instance_cleanup(s['.name']);
-				});
-				return true;
-			case 'configure':
-				if (!env.resolver_set_supported) return false;
-				unlink(pkg.dnsmasq_file);
-				writefile(pkg.dnsmasq_file, '');
-				let ctx2 = config.uci_ctx('dhcp', true);
-				if (cfg.resolver_instance == '*') {
-					ctx2.foreach('dhcp', 'dnsmasq', function(s) {
-						_dnsmasq_instance_setup(s['.name']);
-					});
-				} else {
-					ctx2.foreach('dhcp', 'dnsmasq', function(s) {
-						_dnsmasq_instance_cleanup(s['.name']);
-					});
-					let instances = split(trim(cfg.resolver_instance), /\s+/);
-					for (let inst in instances) {
-						if (!_dnsmasq_instance_setup('@dnsmasq[' + inst + ']'))
-							_dnsmasq_instance_setup(inst);
-					}
-				}
-				return true;
-			case 'kill':
-				if (env.resolver_set_supported)
-					sh.run('killall -q -s HUP dnsmasq');
-				return true;
-			case 'reload':
-				if (!env.resolver_set_supported) return false;
-				output.info.write('Reloading dnsmasq ');
-				output.verbose.write('Reloading dnsmasq ');
-				if (sh.run('/etc/init.d/dnsmasq reload') == 0) {
-					output.okn();
-					return true;
-				} else {
-					output.failn();
-					return false;
-				}
-			case 'restart':
-				if (!env.resolver_set_supported) return false;
-				output.info.write('Restarting dnsmasq ');
-				output.verbose.write('Restarting dnsmasq ');
-				if (sh.run('/etc/init.d/dnsmasq restart') == 0) {
-					output.okn();
-					return true;
-				} else {
-					output.failn();
-					return false;
-				}
-			case 'compare_hash': {
-				if (!env.resolver_set_supported) return false;
-				if (_uci_has_changes('dhcp')) {
-					config.uci_ctx('dhcp').commit('dhcp');
-				}
-				let resolver_new_hash = null;
-				let s = stat(pkg.dnsmasq_file);
-				if (s && s.size > 0) {
-					let md5_out = sh.exec('md5sum ' + sh.quote(pkg.dnsmasq_file));
-					let m = match(md5_out, /^(\S+)/);
-					resolver_new_hash = m ? m[1] : null;
-				}
-				return resolver_new_hash != resolver_stored_hash;
-			}
-			case 'store_hash': {
-				let s = stat(pkg.dnsmasq_file);
-				if (s && s.size > 0) {
-					let md5_out = sh.exec('md5sum ' + sh.quote(pkg.dnsmasq_file));
-					let m = match(md5_out, /^(\S+)/);
-					resolver_stored_hash = m ? m[1] : '';
-				} else {
-					resolver_stored_hash = '';
-				}
-				return true;
-			}
-			case 'wait': {
-				if (resolver_working_flag) return true;
-				let timeout = +(iface || '30');
-				let hostname = config.uci_ctx('system').get('system', '@system[0]', 'hostname') || 'OpenWrt';
-				for (let count = 0; count < timeout; count++) {
-					if (sh.run('resolveip ' + sh.quote(hostname)) == 0) {
-						resolver_working_flag = true;
-						return true;
-					}
-					system('sleep 1');
-				}
-				return false;
-			}
-			}
-			break;
-
+			return env.resolver_set_supported;
 		case 'unbound.nftset':
 			return true;
 		}
+		return false;
+	};
 
+	resolver.wait = function(timeout) {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+		case 'dnsmasq.nftset': {
+			if (resolver_working_flag) return true;
+			let t = +(timeout || '30');
+			let hostname = config.uci_ctx('system').get('system', '@system[0]', 'hostname') || 'OpenWrt';
+			for (let count = 0; count < t; count++) {
+				if (sh.run('resolveip ' + sh.quote(hostname)) == 0) {
+					resolver_working_flag = true;
+					return true;
+				}
+				system('sleep 1');
+			}
+			return false;
+		}
+		case 'unbound.nftset':
+			return true;
+		}
 		return true;
+	};
+
+	resolver.kill = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return true;
+		case 'dnsmasq.nftset':
+			if (env.resolver_set_supported)
+				sh.run('killall -q -s HUP dnsmasq');
+			return true;
+		case 'unbound.nftset':
+			return true;
+		}
+		return true;
+	};
+
+	resolver.reload = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return true;
+		case 'dnsmasq.nftset':
+			if (!env.resolver_set_supported) return false;
+			output.info.write('Reloading dnsmasq ');
+			output.verbose.write('Reloading dnsmasq ');
+			if (sh.run('/etc/init.d/dnsmasq reload') == 0) {
+				output.okn();
+				return true;
+			}
+			output.failn();
+			return false;
+		case 'unbound.nftset':
+			return true;
+		}
+		return true;
+	};
+
+	resolver.restart = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return true;
+		case 'dnsmasq.nftset':
+			if (!env.resolver_set_supported) return false;
+			output.info.write('Restarting dnsmasq ');
+			output.verbose.write('Restarting dnsmasq ');
+			if (sh.run('/etc/init.d/dnsmasq restart') == 0) {
+				output.okn();
+				return true;
+			}
+			output.failn();
+			return false;
+		case 'unbound.nftset':
+			return true;
+		}
+		return true;
+	};
+
+	resolver.store_hash = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return true;
+		case 'dnsmasq.nftset': {
+			let s = stat(pkg.dnsmasq_file);
+			if (s && s.size > 0) {
+				let md5_out = sh.exec('md5sum ' + sh.quote(pkg.dnsmasq_file));
+				let m = match(md5_out, /^(\S+)/);
+				resolver_stored_hash = m ? m[1] : '';
+			} else {
+				resolver_stored_hash = '';
+			}
+			return true;
+		}
+		case 'unbound.nftset':
+			return true;
+		}
+		return true;
+	};
+
+	resolver.compare_hash = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return false;
+		case 'dnsmasq.nftset': {
+			if (!env.resolver_set_supported) return false;
+			if (resolver._uci_has_changes('dhcp')) {
+				config.uci_ctx('dhcp').commit('dhcp');
+			}
+			let resolver_new_hash = '';
+			let s = stat(pkg.dnsmasq_file);
+			if (s && s.size > 0) {
+				let md5_out = sh.exec('md5sum ' + sh.quote(pkg.dnsmasq_file));
+				let m = match(md5_out, /^(\S+)/);
+				resolver_new_hash = m ? m[1] : '';
+			}
+			return resolver_new_hash != resolver_stored_hash;
+		}
+		case 'unbound.nftset':
+			return false;
+		}
+		return false;
+	};
+
+	resolver.configure = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return true;
+		case 'dnsmasq.nftset': {
+			if (!env.resolver_set_supported) return false;
+			unlink(pkg.dnsmasq_file);
+			writefile(pkg.dnsmasq_file, '');
+			let ctx2 = config.uci_ctx('dhcp', true);
+			if (cfg.resolver_instance == '*') {
+				ctx2.foreach('dhcp', 'dnsmasq', function(s) {
+					resolver._dnsmasq_instance_setup(s['.name']);
+				});
+			} else {
+				ctx2.foreach('dhcp', 'dnsmasq', function(s) {
+					resolver._dnsmasq_instance_cleanup(s['.name']);
+				});
+				let instances = split(trim(cfg.resolver_instance), /\s+/);
+				for (let inst in instances) {
+					if (!resolver._dnsmasq_instance_setup('@dnsmasq[' + inst + ']'))
+						resolver._dnsmasq_instance_setup(inst);
+				}
+			}
+			return true;
+		}
+		case 'unbound.nftset':
+			return true;
+		}
+		return true;
+	};
+
+	resolver.cleanup = function() {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return true;
+		case 'dnsmasq.nftset': {
+			if (!env.resolver_set_supported) return false;
+			unlink(pkg.dnsmasq_file);
+			let ctx_dhcp = config.uci_ctx('dhcp', true);
+			ctx_dhcp.foreach('dhcp', 'dnsmasq', function(s) {
+				resolver._dnsmasq_instance_cleanup(s['.name']);
+			});
+			return true;
+		}
+		case 'unbound.nftset':
+			return true;
+		}
+		return true;
+	};
+
+	resolver.create_set = function(iface, target, type_val, uid, name) {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return false;
+		case 'dnsmasq.nftset':
+			if (!env.resolver_set_supported) return false;
+			if (target == 'src') return false;
+			return nftset.create_dnsmasq(iface, target, type_val, uid, name);
+		case 'unbound.nftset':
+			return false;
+		}
+		return false;
+	};
+
+	resolver.add_element = function(iface, target, type_val, uid, name, value) {
+		switch (cfg.resolver_set) {
+		case '':
+		case 'none':
+			return false;
+		case 'dnsmasq.nftset': {
+			if (!env.resolver_set_supported) return false;
+			if (target == 'src') return false;
+			let words = split(trim('' + (value || '')), /\s+/);
+			for (let d in words) {
+				nftset.add_dnsmasq_element(iface, target, type_val, uid, name, d);
+			}
+			return true;
+		}
+		case 'unbound.nftset':
+			return false;
+		}
+		return false;
 	};
 
 	// ── Address Classification ────────────────────────────────────────
@@ -874,8 +990,8 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			param6 = param4;
 		} else if (V.is_domain(first_val)) {
 			if (use_resolver && iface &&
-				resolver('create_resolver_set', iface, target, 'ip', uid, name) &&
-				resolver('add_resolver_element', iface, target, 'ip', uid, name, value)) {
+				resolver.create_set(iface, target, 'ip', uid, name) &&
+				resolver.add_element(iface, target, 'ip', uid, name, value)) {
 				let nft_pfx = pkg.nft_prefix;
 				param4 = pkg.nft_ipv4_flag + ' ' + addr_dir + ' ' + negation +
 					'@' + nft_pfx + '_' + iface + '_4_' + target + '_ip_' + uid + nftset_suffix;

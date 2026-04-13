@@ -681,225 +681,240 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	// ── Interface Routing ───────────────────────────────────────────────
 	
-	function interface_routing(action, tid, mark, iface, gw4, dev4, gw6, dev6, priority) {
-		let readfile = _fs.readfile;
-		let writefile = _fs.writefile;
-		let s = 0, ipv4_error = 1, ipv6_error = 1;
-		let nft_table = pkg.nft_table;
-		let nft_prefix = pkg.nft_prefix;
-		let rule_params = cfg._nft_rule_params ? ' ' + cfg._nft_rule_params : '';
-	
+	let interface_routing = {};
+
+	interface_routing.create = function(tid, mark, iface, gw4, dev4, gw6, dev6, priority) {
 		if (!tid || !mark || !iface) {
 			push(state.errors, { code: 'errorInterfaceRoutingEmptyValues' });
 			return 1;
 		}
-	
-		switch (action) {
-		case 'create': {
-			if (net.is_netifd_interface(iface) || net.is_mwan4_interface(iface))
-				return 0;
-			let table_iface = iface;
-			if (net.is_split_uplink() && iface == cfg.uplink_interface6)
-				table_iface = cfg.uplink_interface4;
-	
-			let rt_content = readfile(pkg.rt_tables_file) || '';
-			if (index(rt_content, tid + ' ' + pkg.ip_table_prefix + '_' + table_iface) < 0) {
-				let lines = split(rt_content, '\n');
-				let new_lines = [];
-				for (let l in lines) {
-					if (l != '' && index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
-						push(new_lines, l);
-				}
-				push(new_lines, tid + ' ' + pkg.ip_table_prefix + '_' + table_iface);
-				writefile(pkg.rt_tables_file, join('\n', new_lines) + '\n');
-				sh.run('sync');
-			}
-	
-			// Always create the nft mark chain so policies can reference it
-			// even when the interface device is not yet available (e.g. a down WireGuard tunnel)
-			let idata = get_interface(iface);
-			nft.ensure_mark_chain(mark, idata.chain_name);
+		let readfile = _fs.readfile;
+		let writefile = _fs.writefile;
+		let nft_table = pkg.nft_table;
+		let nft_prefix = pkg.nft_prefix;
+		let rule_params = cfg._nft_rule_params ? ' ' + cfg._nft_rule_params : '';
+		let ipv4_error = 1, ipv6_error = 1;
 
-			let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
-			if (+dscp >= 1 && +dscp <= 63) {
-				nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-					pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
-				if (cfg.ipv6_enabled)
-					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
-						pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
-			}
-			if (iface == cfg.icmp_interface) {
-				nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-					pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
-				if (cfg.ipv6_enabled)
-					nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
-						pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
-			}
+		if (net.is_netifd_interface(iface) || net.is_mwan4_interface(iface))
+			return 0;
+		let table_iface = iface;
+		if (net.is_split_uplink() && iface == cfg.uplink_interface6)
+			table_iface = cfg.uplink_interface4;
 
-			if (dev4) {
-				ipv4_error = 0;
-				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
-				sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
-				if (gw4 || cfg.strict_enforcement) {
-					if (!gw4 && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev4)), 'POINTOPOINT') >= 0)
-						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'dev', dev4, 'table', tid) ? 0 : 1;
-					else if (!gw4)
-						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
-					else
-						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
-					if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
-						ipv4_error = 1;
-				}
-			} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
-				ipv4_error = 0;
-				sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
-				sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
-				ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
-				if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
-					ipv4_error = 1;
-			}
-
-			if (cfg.ipv6_enabled && dev6) {
-				ipv6_error = 0;
-				sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
-				sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
-				if ((gw6 && gw6 != '::/0') || cfg.strict_enforcement) {
-					if ((!gw6 || gw6 == '::/0') && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev6)), 'POINTOPOINT') >= 0)
-						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
-					else if (!gw6 || gw6 == '::/0')
-						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
-					else {
-						let route_check = sh.exec(pkg.ip_full + ' -6 route list table main');
-						if (index(route_check, ' dev ' + dev6 + ' ') >= 0) {
-							let addr_info = sh.exec(pkg.ip_full + ' -6 address show dev ' + dev6);
-							if (index(addr_info, 'BROADCAST') >= 0)
-								ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'via', gw6, 'dev', dev6, 'table', tid) ? 0 : 1;
-							else if (index(addr_info, 'POINTOPOINT') >= 0)
-								ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
-							else
-								push(state.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
-						} else {
-							let dev6_out = sh.exec(pkg.ip_full + ' -6 -o a show ' + sh.quote(dev6));
-							let dev6_m = match(dev6_out, /\s+inet6\s+(\S+)/);
-							let dev6_addr = dev6_m ? dev6_m[1] : null;
-							if (dev6_addr)
-								sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', dev6_addr, 'dev', dev6, 'table', tid);
-							ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
-						}
-					}
-					if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
-						ipv6_error = 1;
-				}
-			} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
-				ipv6_error = 0;
-				sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
-				sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
-				ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
-				if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
-					ipv6_error = 1;
-			}
-	
-			return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
-		}
-		case 'create_user_set':
-			nft.nftset('create_user_set', iface, 'dst', 'ip', 'user', '', mark) || (s = 1);
-			nft.nftset('create_user_set', iface, 'src', 'ip', 'user', '', mark) || (s = 1);
-			nft.nftset('create_user_set', iface, 'src', 'mac', 'user', '', mark) || (s = 1);
-			return s;
-	
-		case 'delete':
-		case 'destroy': {
-			if (net.is_netifd_interface(iface) || net.is_mwan4_interface(iface)) return 0;
-			sh.run(pkg.ip_full + ' -4 rule del table main prio ' + (+priority - 1000));
-			sh.run(pkg.ip_full + ' -4 rule del table ' + tid + ' prio ' + priority);
-			sh.run(pkg.ip_full + ' -6 rule del table main prio ' + (+priority - 1000));
-			sh.run(pkg.ip_full + ' -6 rule del table ' + tid + ' prio ' + priority);
-			sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
-			sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
-			sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
-			sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
-			let table_iface = iface;
-			if (net.is_split_uplink() && iface == cfg.uplink_interface6)
-				table_iface = cfg.uplink_interface4;
-			let rt = readfile(pkg.rt_tables_file) || '';
-			let lines = split(rt, '\n');
+		let rt_content = readfile(pkg.rt_tables_file) || '';
+		if (index(rt_content, tid + ' ' + pkg.ip_table_prefix + '_' + table_iface) < 0) {
+			let lines = split(rt_content, '\n');
 			let new_lines = [];
 			for (let l in lines) {
 				if (l != '' && index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
 					push(new_lines, l);
 			}
+			push(new_lines, tid + ' ' + pkg.ip_table_prefix + '_' + table_iface);
 			writefile(pkg.rt_tables_file, join('\n', new_lines) + '\n');
 			sh.run('sync');
-			return 0;
 		}
-		case 'reload_interface': {
-			if (net.is_netifd_interface(iface) || net.is_mwan4_interface(iface)) return 0;
-			if (dev4) {
-				ipv4_error = 0;
-				sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
-				sh.ip('-4', 'route', 'flush', 'table', tid);
-				if (gw4 || cfg.strict_enforcement) {
-					if (!gw4 && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev4)), 'POINTOPOINT') >= 0)
-						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'dev', dev4, 'table', tid) ? 0 : 1;
-					else if (!gw4)
-						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
-					else
-						ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
-					if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
-						ipv4_error = 1;
-				}
-			} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
-				ipv4_error = 0;
-				sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
-				sh.ip('-4', 'route', 'flush', 'table', tid);
-				ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+
+		// Always create the nft mark chain so policies can reference it
+		// even when the interface device is not yet available (e.g. a down WireGuard tunnel)
+		let idata = get_interface(iface);
+		nft.ensure_mark_chain(mark, idata.chain_name);
+
+		let dscp = config.uci_ctx(pkg.name).get(pkg.name, 'config', iface + '_dscp') || '0';
+		if (+dscp >= 1 && +dscp <= 63) {
+			nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
+				pkg.nft_ipv4_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
+			if (cfg.ipv6_enabled)
+				nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_prerouting ' +
+					pkg.nft_ipv6_flag + ' dscp ' + dscp + rule_params + ' goto ' + idata.chain_name);
+		}
+		if (iface == cfg.icmp_interface) {
+			nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
+				pkg.nft_ipv4_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
+			if (cfg.ipv6_enabled)
+				nft.nft_add('add rule inet ' + nft_table + ' ' + nft_prefix + '_output ' +
+					pkg.nft_ipv6_flag + ' protocol icmp' + rule_params + ' goto ' + idata.chain_name);
+		}
+
+		if (dev4) {
+			ipv4_error = 0;
+			sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
+			sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
+			if (gw4 || cfg.strict_enforcement) {
+				if (!gw4 && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev4)), 'POINTOPOINT') >= 0)
+					ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'dev', dev4, 'table', tid) ? 0 : 1;
+				else if (!gw4)
+					ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				else
+					ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
 				if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 					ipv4_error = 1;
 			}
-			if (cfg.ipv6_enabled && dev6) {
-				ipv6_error = 0;
-				sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
-				sh.ip('-6', 'route', 'flush', 'table', tid);
-				if ((gw6 && gw6 != '::/0') || cfg.strict_enforcement) {
-					if ((!gw6 || gw6 == '::/0') && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev6)), 'POINTOPOINT') >= 0)
-						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
-					else if (!gw6 || gw6 == '::/0')
-						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
-					else {
-						let route_check = sh.exec(pkg.ip_full + ' -6 route list table main');
-						if (index(route_check, ' dev ' + dev6 + ' ') >= 0) {
-							let addr_info = sh.exec(pkg.ip_full + ' -6 address show dev ' + dev6);
-							if (index(addr_info, 'BROADCAST') >= 0)
-								ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'via', gw6, 'dev', dev6, 'table', tid) ? 0 : 1;
-							else if (index(addr_info, 'POINTOPOINT') >= 0)
-								ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
-							else
-								push(state.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
-						} else {
-							let dev6_out = sh.exec(pkg.ip_full + ' -6 -o a show ' + sh.quote(dev6));
-							let dev6_m = match(dev6_out, /\s+inet6\s+(\S+)/);
-							let dev6_addr = dev6_m ? dev6_m[1] : null;
-							if (dev6_addr)
-								sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', dev6_addr, 'dev', dev6, 'table', tid);
+		} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
+			ipv4_error = 0;
+			sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
+			sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
+			ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+			if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+				ipv4_error = 1;
+		}
+
+		if (cfg.ipv6_enabled && dev6) {
+			ipv6_error = 0;
+			sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
+			sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
+			if ((gw6 && gw6 != '::/0') || cfg.strict_enforcement) {
+				if ((!gw6 || gw6 == '::/0') && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev6)), 'POINTOPOINT') >= 0)
+					ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
+				else if (!gw6 || gw6 == '::/0')
+					ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				else {
+					let route_check = sh.exec(pkg.ip_full + ' -6 route list table main');
+					if (index(route_check, ' dev ' + dev6 + ' ') >= 0) {
+						let addr_info = sh.exec(pkg.ip_full + ' -6 address show dev ' + dev6);
+						if (index(addr_info, 'BROADCAST') >= 0)
+							ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'via', gw6, 'dev', dev6, 'table', tid) ? 0 : 1;
+						else if (index(addr_info, 'POINTOPOINT') >= 0)
 							ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
-						}
+						else
+							push(state.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
+					} else {
+						let dev6_out = sh.exec(pkg.ip_full + ' -6 -o a show ' + sh.quote(dev6));
+						let dev6_m = match(dev6_out, /\s+inet6\s+(\S+)/);
+						let dev6_addr = dev6_m ? dev6_m[1] : null;
+						if (dev6_addr)
+							sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', dev6_addr, 'dev', dev6, 'table', tid);
+						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
 					}
-					if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
-						ipv6_error = 1;
 				}
-			} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
-				ipv6_error = 0;
-				sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
-				sh.ip('-6', 'route', 'flush', 'table', tid);
-				ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
 				if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
 					ipv6_error = 1;
 			}
-			return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
+		} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
+			ipv6_error = 0;
+			sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
+			sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
+			ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+			if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+				ipv6_error = 1;
 		}
+
+		return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
+	};
+
+	interface_routing.create_user_set = function(iface, mark) {
+		if (!iface || !mark) {
+			push(state.errors, { code: 'errorInterfaceRoutingEmptyValues' });
+			return 1;
 		}
+		let s = 0;
+		nft.nftset.create_user(iface, 'dst', 'ip', 'user', '', mark) || (s = 1);
+		nft.nftset.create_user(iface, 'src', 'ip', 'user', '', mark) || (s = 1);
+		nft.nftset.create_user(iface, 'src', 'mac', 'user', '', mark) || (s = 1);
 		return s;
-	}
+	};
+
+	interface_routing.destroy = function(tid, iface, priority) {
+		if (!tid || !iface) {
+			push(state.errors, { code: 'errorInterfaceRoutingEmptyValues' });
+			return 1;
+		}
+		let readfile = _fs.readfile;
+		let writefile = _fs.writefile;
+		if (net.is_netifd_interface(iface) || net.is_mwan4_interface(iface)) return 0;
+		sh.run(pkg.ip_full + ' -4 rule del table main prio ' + (+priority - 1000));
+		sh.run(pkg.ip_full + ' -4 rule del table ' + tid + ' prio ' + priority);
+		sh.run(pkg.ip_full + ' -6 rule del table main prio ' + (+priority - 1000));
+		sh.run(pkg.ip_full + ' -6 rule del table ' + tid + ' prio ' + priority);
+		sh.run(pkg.ip_full + ' -4 rule flush table ' + tid);
+		sh.run(pkg.ip_full + ' -4 route flush table ' + tid);
+		sh.run(pkg.ip_full + ' -6 rule flush table ' + tid);
+		sh.run(pkg.ip_full + ' -6 route flush table ' + tid);
+		let table_iface = iface;
+		if (net.is_split_uplink() && iface == cfg.uplink_interface6)
+			table_iface = cfg.uplink_interface4;
+		let rt = readfile(pkg.rt_tables_file) || '';
+		let lines = split(rt, '\n');
+		let new_lines = [];
+		for (let l in lines) {
+			if (l != '' && index(l, pkg.ip_table_prefix + '_' + table_iface) < 0)
+				push(new_lines, l);
+		}
+		writefile(pkg.rt_tables_file, join('\n', new_lines) + '\n');
+		sh.run('sync');
+		return 0;
+	};
+
+	interface_routing.reload = function(tid, mark, iface, gw4, dev4, gw6, dev6, priority) {
+		if (!tid || !mark || !iface) {
+			push(state.errors, { code: 'errorInterfaceRoutingEmptyValues' });
+			return 1;
+		}
+		let ipv4_error = 1, ipv6_error = 1;
+		if (net.is_netifd_interface(iface) || net.is_mwan4_interface(iface)) return 0;
+		if (dev4) {
+			ipv4_error = 0;
+			sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
+			sh.ip('-4', 'route', 'flush', 'table', tid);
+			if (gw4 || cfg.strict_enforcement) {
+				if (!gw4 && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev4)), 'POINTOPOINT') >= 0)
+					ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'dev', dev4, 'table', tid) ? 0 : 1;
+				else if (!gw4)
+					ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				else
+					ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'default', 'via', gw4, 'dev', dev4, 'table', tid) ? 0 : 1;
+				if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+					ipv4_error = 1;
+			}
+		} else if (cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink6(iface))) {
+			ipv4_error = 0;
+			sh.run(pkg.ip_full + ' -4 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
+			sh.ip('-4', 'route', 'flush', 'table', tid);
+			ipv4_error = sh.try_cmd(state.errors, pkg.ip_full, '-4', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+			if (sh.try_ip(state.errors, '-4', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+				ipv4_error = 1;
+		}
+		if (cfg.ipv6_enabled && dev6) {
+			ipv6_error = 0;
+			sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
+			sh.ip('-6', 'route', 'flush', 'table', tid);
+			if ((gw6 && gw6 != '::/0') || cfg.strict_enforcement) {
+				if ((!gw6 || gw6 == '::/0') && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev6)), 'POINTOPOINT') >= 0)
+					ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
+				else if (!gw6 || gw6 == '::/0')
+					ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+				else {
+					let route_check = sh.exec(pkg.ip_full + ' -6 route list table main');
+					if (index(route_check, ' dev ' + dev6 + ' ') >= 0) {
+						let addr_info = sh.exec(pkg.ip_full + ' -6 address show dev ' + dev6);
+						if (index(addr_info, 'BROADCAST') >= 0)
+							ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'via', gw6, 'dev', dev6, 'table', tid) ? 0 : 1;
+						else if (index(addr_info, 'POINTOPOINT') >= 0)
+							ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
+						else
+							push(state.errors, { code: 'errorInterfaceRoutingUnknownDevType', info: dev6 });
+					} else {
+						let dev6_out = sh.exec(pkg.ip_full + ' -6 -o a show ' + sh.quote(dev6));
+						let dev6_m = match(dev6_out, /\s+inet6\s+(\S+)/);
+						let dev6_addr = dev6_m ? dev6_m[1] : null;
+						if (dev6_addr)
+							sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', dev6_addr, 'dev', dev6, 'table', tid);
+						ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'default', 'dev', dev6, 'table', tid) ? 0 : 1;
+					}
+				}
+				if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+					ipv6_error = 1;
+			}
+		} else if (cfg.ipv6_enabled && cfg.strict_enforcement && !(net.is_split_uplink() && net.is_uplink4(iface))) {
+			ipv6_error = 0;
+			sh.run(pkg.ip_full + ' -6 rule flush fwmark ' + sh.quote(mark + '/' + cfg.fw_mask) + ' table ' + tid);
+			sh.ip('-6', 'route', 'flush', 'table', tid);
+			ipv6_error = sh.try_cmd(state.errors, pkg.ip_full, '-6', 'route', 'replace', 'unreachable', 'default', 'table', tid) ? 0 : 1;
+			if (sh.try_ip(state.errors, '-6', 'rule', 'replace', 'fwmark', mark + '/' + cfg.fw_mask, 'table', tid, 'priority', priority) != true)
+				ipv6_error = 1;
+		}
+		return (ipv4_error == 0 || ipv6_error == 0) ? 0 : 1;
+	};
+
 	
 	// ── Enumerate Interfaces ────────────────────────────────────────────
 	
@@ -995,231 +1010,244 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	// ── Process Interface ───────────────────────────────────────────────
 	
-	function interface_process(iface, action, reloaded_iface) {
-		let readfile = _fs.readfile;
-	
-		let _get_tor_dns_port = function() {
-			let content = readfile(pkg.tor_config_file);
-			if (type(content) != 'string' || !content) return '9053';
-			let m = match(content, /DNSPort\s+\S+:(\d+)/);
-			return m ? m[1] : '9053';
-		};
-	
-		let _get_tor_traffic_port = function() {
-			let content = readfile(pkg.tor_config_file);
-			if (type(content) != 'string' || !content) return '9040';
-			let m = match(content, /TransPort\s+\S+:(\d+)/);
-			return m ? m[1] : '9040';
-		};
-	
-		let s = 0;
-		let nft_prefix = pkg.nft_prefix;
-	
-		if (iface == 'all') {
-			let prio = '' + iface_priority;
-			if (action == 'create_global_rules') {
-				config.uci_ctx('network').foreach('network', 'interface', function(s_iface) {
-					let name = s_iface['.name'];
-					if (net.is_wg_server(name) && !net.is_ignored_interface(name)) {
-						let disabled = config.uci_ctx('network').get('network', name, 'disabled');
-						let listen_port = config.uci_ctx('network').get('network', name, 'listen_port');
-						if (disabled != '1' && listen_port) {
-							if (cfg.uplink_interface4) {
-								let tbl = pkg.ip_table_prefix + '_' + cfg.uplink_interface4;
-								system(pkg.ip_full + ' -4 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
-								sh.ip('-4', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
-								if (cfg.ipv6_enabled) {
-									system(pkg.ip_full + ' -6 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
-									sh.ip('-6', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
-								}
-								prio = '' + (+prio - 1);
-							}
+	let interface_process = {};
+
+	interface_process._get_tor_dns_port = function() {
+		let content = _fs.readfile(pkg.tor_config_file);
+		if (type(content) != 'string' || !content) return '9053';
+		let m = match(content, /DNSPort\s+\S+:(\d+)/);
+		return m ? m[1] : '9053';
+	};
+
+	interface_process._get_tor_traffic_port = function() {
+		let content = _fs.readfile(pkg.tor_config_file);
+		if (type(content) != 'string' || !content) return '9040';
+		let m = match(content, /TransPort\s+\S+:(\d+)/);
+		return m ? m[1] : '9040';
+	};
+
+	interface_process.create_global_rules = function() {
+		let prio = '' + iface_priority;
+		config.uci_ctx('network').foreach('network', 'interface', function(s_iface) {
+			let name = s_iface['.name'];
+			if (net.is_wg_server(name) && !net.is_ignored_interface(name)) {
+				let disabled = config.uci_ctx('network').get('network', name, 'disabled');
+				let listen_port = config.uci_ctx('network').get('network', name, 'listen_port');
+				if (disabled != '1' && listen_port) {
+					if (cfg.uplink_interface4) {
+						let tbl = pkg.ip_table_prefix + '_' + cfg.uplink_interface4;
+						system(pkg.ip_full + ' -4 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
+						sh.ip('-4', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
+						if (cfg.ipv6_enabled) {
+							system(pkg.ip_full + ' -6 rule del sport ' + listen_port + ' table ' + tbl + ' priority ' + prio + ' 2>/dev/null');
+							sh.ip('-6', 'rule', 'add', 'sport', listen_port, 'table', tbl, 'priority', prio);
 						}
+						prio = '' + (+prio - 1);
 					}
-				});
-				system(pkg.ip_full + ' -4 rule del priority ' + prio + ' 2>/dev/null');
-				system(pkg.ip_full + ' -4 rule del lookup main suppress_prefixlength ' + cfg.prefixlength + ' 2>/dev/null');
-				sh.try_cmd(state.errors, pkg.ip_full, '-4', 'rule', 'add', 'lookup', 'main', 'suppress_prefixlength',
-					'' + cfg.prefixlength, 'pref', prio);
-				if (cfg.ipv6_enabled) {
-					system(pkg.ip_full + ' -6 rule del priority ' + prio + ' 2>/dev/null');
-					system(pkg.ip_full + ' -6 rule del lookup main suppress_prefixlength ' + cfg.prefixlength + ' 2>/dev/null');
-					sh.try_cmd(state.errors, pkg.ip_full, '-6', 'rule', 'add', 'lookup', 'main', 'suppress_prefixlength',
-						'' + cfg.prefixlength, 'pref', prio);
 				}
 			}
-			iface_priority = prio;
-			return 0;
+		});
+		system(pkg.ip_full + ' -4 rule del priority ' + prio + ' 2>/dev/null');
+		system(pkg.ip_full + ' -4 rule del lookup main suppress_prefixlength ' + cfg.prefixlength + ' 2>/dev/null');
+		sh.try_cmd(state.errors, pkg.ip_full, '-4', 'rule', 'add', 'lookup', 'main', 'suppress_prefixlength',
+			'' + cfg.prefixlength, 'pref', prio);
+		if (cfg.ipv6_enabled) {
+			system(pkg.ip_full + ' -6 rule del priority ' + prio + ' 2>/dev/null');
+			system(pkg.ip_full + ' -6 rule del lookup main suppress_prefixlength ' + cfg.prefixlength + ' 2>/dev/null');
+			sh.try_cmd(state.errors, pkg.ip_full, '-6', 'rule', 'add', 'lookup', 'main', 'suppress_prefixlength',
+				'' + cfg.prefixlength, 'pref', prio);
 		}
-	
-		if (iface == 'tor') {
-			switch (action) {
-			case 'create': case 'reload': case 'reload_interface':
-				env.tor_dns_port = _get_tor_dns_port();
-				env.tor_traffic_port = _get_tor_traffic_port();
-				set_interface('tor', {
-					device_ipv4: '', device_ipv6: '',
-					gateway_ipv4: '53->' + env.tor_dns_port,
-					gateway_ipv6: '80,443->' + env.tor_traffic_port,
-					is_default: false, action: action,
-				});
-				break;
-			}
-			return 0;
+		iface_priority = prio;
+		return 0;
+	};
+
+	interface_process.tor = function(action) {
+		switch (action) {
+		case 'create':
+		case 'reload':
+		case 'reload_interface':
+			env.tor_dns_port = interface_process._get_tor_dns_port();
+			env.tor_traffic_port = interface_process._get_tor_traffic_port();
+			set_interface('tor', {
+				device_ipv4: '', device_ipv6: '',
+				gateway_ipv4: '53->' + env.tor_dns_port,
+				gateway_ipv6: '80,443->' + env.tor_traffic_port,
+				is_default: false, action: action,
+			});
+			break;
 		}
-	
-		if (action == 'destroy' && net.is_wg_server(iface) && !net.is_ignored_interface(iface)) {
-			let lp = config.uci_ctx('network').get('network', iface, 'listen_port');
-			if (lp) {
-				sh.ip('-4', 'rule', 'del', 'sport', lp, 'table', 'pbr_' + cfg.uplink_interface4);
-				sh.ip('-6', 'rule', 'del', 'sport', lp, 'table', 'pbr_' + cfg.uplink_interface4);
-			}
-		}
-	
+		return 0;
+	};
+
+	interface_process.create = function(iface) {
 		let existing = get_interface(iface);
 		if (!existing) return 0;
-	
 		let _mark = existing.mark;
 		let _priority = existing.priority;
 		let dev4 = existing.device_ipv4;
 		let dev6 = existing.device_ipv6;
-		let gw4, gw6, disp_dev, disp_status, display_text;
-	
-		switch (action) {
-		case 'create': {
-			let _tid = interface_resolve_tid(iface);
-			gw4 = net.get_gateway4(iface, dev4);
-			gw6 = net.get_gateway6(iface, dev6);
-			if (net.is_split_uplink()) {
-				if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
-				else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
-			}
-			let dg4 = gw4 || '0.0.0.0';
-			let dg6 = gw6 || '::/0';
-			disp_dev = (iface != dev4) ? dev4 : '';
-			disp_status = '';
-			if (net.is_default_dev(dev4))
-				disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
-			if (net.is_netifd_interface_default(iface))
-				disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
-			display_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
-			output.verbose.write("Setting up routing for '" + display_text + "' ");
-			if (interface_routing('create', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
-				set_interface(iface, {
-					tid: _tid, mark: _mark, priority: _priority,
-					chain_name: existing.chain_name,
-					device_ipv4: dev4 || '', device_ipv6: dev6 || '',
-					gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
-					is_default: disp_status ? true : false,
-					status_symbol: disp_status, action: 'create',
-				});
-				if (net.is_netifd_interface(iface)) output.okb();
-				else output.ok();
-			} else {
-				push(state.errors, { code: 'errorFailedSetup', info: display_text });
-				output.fail();
-			}
-			break;
+
+		let _tid = interface_resolve_tid(iface);
+		let gw4 = net.get_gateway4(iface, dev4);
+		let gw6 = net.get_gateway6(iface, dev6);
+		if (net.is_split_uplink()) {
+			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
+			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
 		}
-	
-		case 'create_user_set': {
-			let _tid = interface_resolve_tid(iface);
-			if (net.is_split_uplink()) {
-				if (net.is_uplink4(iface)) dev6 = '';
-				else if (net.is_uplink6(iface)) dev4 = '';
-			}
-			interface_routing('create_user_set', _tid, _mark, iface, '', dev4, '', dev6, _priority);
-			break;
-		}
-	
-		case 'destroy': {
-			let _tid = interface_resolve_tid(iface);
-			if (net.is_split_uplink()) {
-				if (net.is_uplink4(iface)) dev6 = '';
-				else if (net.is_uplink6(iface)) dev4 = '';
-			}
-			disp_dev = (iface != dev4) ? dev4 : '';
-			display_text = iface + '/' + (disp_dev ? disp_dev : '');
-			output.verbose.write("Removing routing for '" + display_text + "' ");
-			interface_routing('destroy', _tid, _mark, iface, '', dev4, '', dev6, _priority);
-			if (net.is_netifd_interface(iface)) output.okb();
-			else output.ok();
-			break;
-		}
-	
-		case 'reload': {
-			let _tid = interface_resolve_tid(iface);
-			gw4 = net.get_gateway4(iface, dev4);
-			gw6 = net.get_gateway6(iface, dev6);
-			if (net.is_split_uplink()) {
-				if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
-				else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
-			}
-			disp_dev = (iface != dev4) ? dev4 : '';
-			disp_status = '';
-			if (net.is_default_dev(dev4))
-				disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
-			if (net.is_netifd_interface_default(iface))
-				disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
+		let dg4 = gw4 || '0.0.0.0';
+		let dg6 = gw6 || '::/0';
+		let disp_dev = (iface != dev4) ? dev4 : '';
+		let disp_status = '';
+		if (net.is_default_dev(dev4))
+			disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
+		if (net.is_netifd_interface_default(iface))
+			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
+		let display_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
+		output.verbose.write("Setting up routing for '" + display_text + "' ");
+		if (interface_routing.create(_tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 			set_interface(iface, {
 				tid: _tid, mark: _mark, priority: _priority,
 				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 				gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
 				is_default: disp_status ? true : false,
-				status_symbol: disp_status, action: 'reload',
+				status_symbol: disp_status, action: 'create',
 			});
-			break;
+			if (net.is_netifd_interface(iface)) output.okb();
+			else output.ok();
+		} else {
+			push(state.errors, { code: 'errorFailedSetup', info: display_text });
+			output.fail();
 		}
-	
-		case 'reload_interface': {
-			let _tid = interface_resolve_tid(iface);
-			gw4 = net.get_gateway4(iface, dev4);
-			gw6 = net.get_gateway6(iface, dev6);
-			if (net.is_split_uplink()) {
-				if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
-				else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
+		return 0;
+	};
+
+	interface_process.create_user_set = function(iface) {
+		let existing = get_interface(iface);
+		if (!existing) return 0;
+		let _mark = existing.mark;
+		let _priority = existing.priority;
+		let dev4 = existing.device_ipv4;
+		let dev6 = existing.device_ipv6;
+		let _tid = interface_resolve_tid(iface);
+		if (net.is_split_uplink()) {
+			if (net.is_uplink4(iface)) dev6 = '';
+			else if (net.is_uplink6(iface)) dev4 = '';
+		}
+		interface_routing.create_user_set(iface, _mark);
+		return 0;
+	};
+
+	interface_process.destroy = function(iface) {
+		if (net.is_wg_server(iface) && !net.is_ignored_interface(iface)) {
+			let lp = config.uci_ctx('network').get('network', iface, 'listen_port');
+			if (lp) {
+				sh.ip('-4', 'rule', 'del', 'sport', lp, 'table', 'pbr_' + cfg.uplink_interface4);
+				sh.ip('-6', 'rule', 'del', 'sport', lp, 'table', 'pbr_' + cfg.uplink_interface4);
 			}
-			disp_dev = (iface != dev4) ? dev4 : '';
-			disp_status = '';
-			if (net.is_default_dev(dev4))
-				disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
-			if (net.is_netifd_interface_default(iface))
-				disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
-			if (iface == reloaded_iface) {
-				let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + (gw4 || '0.0.0.0') + (cfg.ipv6_enabled ? '/' + (gw6 || '::/0') : '');
-				output.verbose.write("Reloading routing for '" + ri_text + "' ");
-				if (interface_routing('reload_interface', _tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
-					set_interface(iface, {
-						tid: _tid, mark: _mark, priority: _priority,
-						chain_name: existing.chain_name,
-						device_ipv4: dev4 || '', device_ipv6: dev6 || '',
-						gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
-						is_default: disp_status ? true : false,
-						status_symbol: disp_status, action: 'reload_interface',
-					});
-					if (net.is_netifd_interface(iface)) output.okb();
-					else output.ok();
-				} else {
-					push(state.errors, { code: 'errorFailedReload', info: ri_text });
-					output.fail();
-				}
-			} else {
+		}
+		let existing = get_interface(iface);
+		if (!existing) return 0;
+		let _mark = existing.mark;
+		let _priority = existing.priority;
+		let dev4 = existing.device_ipv4;
+		let dev6 = existing.device_ipv6;
+		let _tid = interface_resolve_tid(iface);
+		if (net.is_split_uplink()) {
+			if (net.is_uplink4(iface)) dev6 = '';
+			else if (net.is_uplink6(iface)) dev4 = '';
+		}
+		let disp_dev = (iface != dev4) ? dev4 : '';
+		let display_text = iface + '/' + (disp_dev ? disp_dev : '');
+		output.verbose.write("Removing routing for '" + display_text + "' ");
+		interface_routing.destroy(_tid, iface, _priority);
+		if (net.is_netifd_interface(iface)) output.okb();
+		else output.ok();
+		return 0;
+	};
+
+	interface_process.reload = function(iface) {
+		let existing = get_interface(iface);
+		if (!existing) return 0;
+		let _mark = existing.mark;
+		let _priority = existing.priority;
+		let dev4 = existing.device_ipv4;
+		let dev6 = existing.device_ipv6;
+		let _tid = interface_resolve_tid(iface);
+		let gw4 = net.get_gateway4(iface, dev4);
+		let gw6 = net.get_gateway6(iface, dev6);
+		if (net.is_split_uplink()) {
+			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
+			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
+		}
+		let disp_dev = (iface != dev4) ? dev4 : '';
+		let disp_status = '';
+		if (net.is_default_dev(dev4))
+			disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
+		if (net.is_netifd_interface_default(iface))
+			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
+		set_interface(iface, {
+			tid: _tid, mark: _mark, priority: _priority,
+			chain_name: existing.chain_name,
+			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
+			gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
+			is_default: disp_status ? true : false,
+			status_symbol: disp_status, action: 'reload',
+		});
+		return 0;
+	};
+
+	interface_process.reload_interface = function(iface, reloaded_iface) {
+		let existing = get_interface(iface);
+		if (!existing) return 0;
+		let _mark = existing.mark;
+		let _priority = existing.priority;
+		let dev4 = existing.device_ipv4;
+		let dev6 = existing.device_ipv6;
+		let _tid = interface_resolve_tid(iface);
+		let gw4 = net.get_gateway4(iface, dev4);
+		let gw6 = net.get_gateway6(iface, dev6);
+		if (net.is_split_uplink()) {
+			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
+			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
+		}
+		let disp_dev = (iface != dev4) ? dev4 : '';
+		let disp_status = '';
+		if (net.is_default_dev(dev4))
+			disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
+		if (net.is_netifd_interface_default(iface))
+			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
+		if (iface == reloaded_iface) {
+			let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + (gw4 || '0.0.0.0') + (cfg.ipv6_enabled ? '/' + (gw6 || '::/0') : '');
+			output.verbose.write("Reloading routing for '" + ri_text + "' ");
+			if (interface_routing.reload(_tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 				set_interface(iface, {
 					tid: _tid, mark: _mark, priority: _priority,
 					chain_name: existing.chain_name,
 					device_ipv4: dev4 || '', device_ipv6: dev6 || '',
 					gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
 					is_default: disp_status ? true : false,
-					status_symbol: disp_status, action: 'skip_interface',
+					status_symbol: disp_status, action: 'reload_interface',
 				});
+				if (net.is_netifd_interface(iface)) output.okb();
+				else output.ok();
+			} else {
+				push(state.errors, { code: 'errorFailedReload', info: ri_text });
+				output.fail();
 			}
-			break;
+		} else {
+			set_interface(iface, {
+				tid: _tid, mark: _mark, priority: _priority,
+				chain_name: existing.chain_name,
+				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
+				gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
+				is_default: disp_status ? true : false,
+				status_symbol: disp_status, action: 'skip_interface',
+			});
 		}
-		}
-	
-		return s;
-	}
+		return 0;
+	};
+
 	
 	// ── User File Process ───────────────────────────────────────────────
 	
@@ -1684,12 +1712,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 		switch (service_start_trigger) {
 		case 'on_interface_reload':
-			nft.resolver('store_hash');
+			nft.resolver.store_hash();
 			output.okn();
 			output.info.write('Reloading Interface: ' + reloaded_iface + ' ');
 			start_time = time();
 			config.uci_ctx('network').foreach('network', 'interface', function(s) {
-				interface_process(s['.name'], 'reload_interface', reloaded_iface);
+				interface_process.reload_interface(s['.name'], reloaded_iface);
 			});
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Reloading interface ' + reloaded_iface + ' took ' + (end_time - start_time) + 's');
@@ -1697,8 +1725,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			break;
 	
 		default:
-			nft.resolver('store_hash');
-			nft.resolver('configure');
+			nft.resolver.store_hash();
+			nft.resolver.configure();
 			nft.cleanup('main_table', 'rt_tables', 'main_chains', 'sets');
 			nft.nft_file.init('main', iface_registry);
 			output.okn();
@@ -1706,11 +1734,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			output.info.write('Processing interfaces ');
 			start_time = time();
 			config.uci_ctx('network').foreach('network', 'interface', function(s) {
-				interface_process(s['.name'], 'create');
+				interface_process.create(s['.name']);
 			});
-			interface_process('tor', 'destroy');
-			if (net.is_tor_running()) interface_process('tor', 'create');
-			interface_process('all', 'create_global_rules');
+			interface_process.tor('destroy');
+			if (net.is_tor_running()) interface_process.tor('create');
+			interface_process.create_global_rules();
 			sh.run(pkg.ip_full + ' route flush cache');
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Processing interfaces took ' + (end_time - start_time) + 's');
@@ -1745,7 +1773,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 			if (net.is_config_enabled('include') || stat('/etc/' + pkg.name + '.d/')?.type == 'directory') {
 				config.uci_ctx('network').foreach('network', 'interface', function(s) {
-					interface_process(s['.name'], 'create_user_set');
+					interface_process.create_user_set(s['.name']);
 				});
 				output.info.write('Processing user file(s) ');
 				start_time = time();
@@ -1771,7 +1799,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			end_time = time();
 			output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Installing nft rules took ' + (end_time - start_time) + 's');
 
-			if (nft.resolver('compare_hash')) nft.resolver('restart');
+			if (nft.resolver.compare_hash()) nft.resolver.restart();
 			break;
 		}
 	
@@ -1849,12 +1877,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 
 		output.info.write('Resetting resolver ');
 		output.verbose.write('Resetting resolver ');
-		if (nft.resolver('store_hash') && nft.resolver('cleanup'))
+		if (nft.resolver.store_hash() && nft.resolver.cleanup())
 			output.okn();
 		else
 			output.failn();
 
-		if (nft.resolver('compare_hash')) nft.resolver('restart');
+		if (nft.resolver.compare_hash()) nft.resolver.restart();
 
 		if (cfg.enabled) {
 			output.info.write(pkg.service_name + ' stopped ');
@@ -1874,7 +1902,6 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let svc_data = svc_info?.[pkg.name]?.data;
 
 		if (nft.nft_file.exists('main')) {
-			if (nft.resolver('compare_hash')) nft.resolver('restart');
 			let mode;
 			if (length(keys(env.netifd_mark)) > 0) mode = 'netifd-compatibility mode';
 			else if (length(keys(env.mwan4_mark)) > 0) mode = 'mwan4-compatibility mode';
