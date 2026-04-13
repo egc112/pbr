@@ -246,7 +246,8 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			unlink(pkg.nft_main_file);
 			break;
 		case 'netifd':
-			output.print('Removing fw4 netifd nft file ');
+			output.info.write('Removing fw4 netifd nft file ');
+			output.verbose.write('Removing fw4 netifd nft file ');
 			if (unlink(pkg.nft_netifd_file) != false) {
 				output.okbn();
 			} else {
@@ -284,7 +285,8 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			sh.mkdir_p(_dirname(pkg.nft_temp_file));
 			sh.mkdir_p(_dirname(pkg.nft_main_file));
 			writefile(pkg.nft_temp_file, '#!/usr/sbin/nft -f\n\n' + join('\n', nft_lines) + '\n');
-			output.print('Installing fw4 nft file ');
+			output.info.write('Installing fw4 nft file ');
+			output.verbose.write('Installing fw4 nft file ');
 			if (nft_call('-c', '-f', pkg.nft_temp_file) &&
 				sh.run('cp -f ' + sh.quote(pkg.nft_temp_file) + ' ' + sh.quote(pkg.nft_main_file)) == 0) {
 				output.okn();
@@ -301,7 +303,8 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			sh.mkdir_p(_dirname(pkg.nft_temp_file));
 			sh.mkdir_p(_dirname(pkg.nft_netifd_file));
 			writefile(pkg.nft_temp_file, '#!/usr/sbin/nft -f\n\n' + join('\n', nft_lines) + '\n');
-			output.print('Installing fw4 netifd nft file ');
+			output.info.write('Installing fw4 netifd nft file ');
+			output.verbose.write('Installing fw4 netifd nft file ');
 			if (nft_call('-c', '-f', pkg.nft_temp_file) &&
 				sh.run('cp -f ' + sh.quote(pkg.nft_temp_file) + ' ' + sh.quote(pkg.nft_netifd_file)) == 0) {
 				output.okbn();
@@ -778,22 +781,22 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 				return true;
 			case 'reload':
 				if (!env.resolver_set_supported) return false;
-				output.debug.write('Reloading dnsmasq ');
+				output.verbose.write('Reloading dnsmasq ');
 				if (sh.run('/etc/init.d/dnsmasq reload') == 0) {
-					output.debug.okn();
+					output.verbose.okn();
 					return true;
 				} else {
-					output.debug.failn();
+					output.verbose.failn();
 					return false;
 				}
 			case 'restart':
 				if (!env.resolver_set_supported) return false;
-				output.debug.write('Restarting dnsmasq ');
+				output.verbose.write('Restarting dnsmasq ');
 				if (sh.run('/etc/init.d/dnsmasq restart') == 0) {
-					output.debug.okn();
+					output.verbose.okn();
 					return true;
 				} else {
-					output.debug.failn();
+					output.verbose.failn();
 					return false;
 				}
 			case 'compare_hash': {

@@ -19,8 +19,6 @@ function create_output(sh, pkg_name, sym) {
 	}
 
 	function _write(level, ...args) {
-		if (!verbosity && _uci_getter)
-			verbosity = int(_uci_getter() || '2'); // ucode-lsp disable
 		let msg = join('', args);
 		if (level != null && (verbosity & level) == 0) return;
 
@@ -69,11 +67,6 @@ function create_output(sh, pkg_name, sym) {
 			failn:   function() { _write(2, sym.fail[1] + '\\n'); },
 			newline: function() { _write(2, '\\n'); },
 		},
-		debug: {
-			write:   function(...args) { _write(3, ...args); },
-			okn:     function() { _write(3, sym.ok[1] + '\\n'); },
-			failn:   function() { _write(3, sym.fail[1] + '\\n'); },
-		},
 		print:    function(...args) { _write(null, ...args); },
 		ok:       function() { _write(1, sym.ok[0]); _write(2, sym.ok[1] + '\\n'); },
 		okn:      function() { _write(1, sym.ok[0] + '\\n'); _write(2, sym.ok[1] + '\\n'); },
@@ -83,7 +76,7 @@ function create_output(sh, pkg_name, sym) {
 		failn:    function() { _write(1, sym.fail[0] + '\\n'); _write(2, sym.fail[1] + '\\n'); },
 		dot:      function() { _write(1, sym.dot[0]); _write(2, sym.dot[1]); },
 		error:    function(msg) { _write(null, sym.ERR + ' ' + msg + '!\\n'); },
-		warning:  function(msg) { _write(null, sym.WARN + ' ' + msg + '.\\n'); },
+		warning:  function(msg) { _write(3, sym.WARN + ' ' + msg + '.\\n'); },
 		quiet_mode: function(mode, uci_getter) {
 			if (mode == 'on') verbosity = 0;
 			else if (uci_getter) verbosity = int(uci_getter() || '2');

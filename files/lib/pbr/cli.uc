@@ -45,11 +45,11 @@ case 'service_started':
 	break;
 
 case 'stop_forward':
-	pbr.stop_forward();
+	pbr.forwarding.disable();
 	break;
 
 case 'enable_forward':
-	pbr.enable_forward();
+	pbr.forwarding.enable();
 	break;
 
 default:
