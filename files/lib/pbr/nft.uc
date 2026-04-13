@@ -216,7 +216,7 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			for (let ch in ['dstnat', ...chains])
 				push(nft_lines, 'add chain inet ' + nft_table + ' ' + nft_prefix + '_' + ch + ' {}');
 			push(nft_lines, '');
-			push(nft_lines, 'add rule inet ' + nft_table + ' dstnat jump ' + nft_prefix + '_dstnat');
+			push(nft_lines, 'insert rule inet ' + nft_table + ' dstnat jump ' + nft_prefix + '_dstnat');
 			push(nft_lines, 'add rule inet ' + nft_table + ' mangle_prerouting jump ' + nft_prefix + '_prerouting');
 			push(nft_lines, 'add rule inet ' + nft_table + ' mangle_output jump ' + nft_prefix + '_output');
 			push(nft_lines, 'add rule inet ' + nft_table + ' mangle_forward jump ' + nft_prefix + '_forward');
@@ -816,6 +816,8 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 					let md5_out = sh.exec('md5sum ' + sh.quote(pkg.dnsmasq_file));
 					let m = match(md5_out, /^(\S+)/);
 					resolver_stored_hash = m ? m[1] : '';
+				} else {
+					resolver_stored_hash = '';
 				}
 				return true;
 			}

@@ -1675,6 +1675,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 		switch (service_start_trigger) {
 		case 'on_interface_reload':
+			nft.resolver('store_hash');
 			output.okn();
 			output.info.write('Reloading Interface: ' + reloaded_iface + ' ');
 			start_time = time();
