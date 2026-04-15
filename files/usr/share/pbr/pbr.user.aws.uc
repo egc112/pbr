@@ -9,7 +9,7 @@ return function(api) {
 	let raw = api.download(url);
 	if (!raw) return;
 
-	let data = json(raw);
+	let data = json('' + raw);
 	if (!data) return;
 
 	let set4 = api.nftset(iface, '4');
