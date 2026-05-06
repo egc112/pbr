@@ -171,23 +171,68 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 
 	// ── Gateway Helpers ─────────────────────────────────────────────
 
-	function get_gateway4(iface, dev) {
+	function default_via_from_route(out) {
+		for (let line in split(out, '\n')) {
+			let parts = split(trim(line), /\s+/);
+			if (parts[0] != 'default') continue;
+			for (let i = 0; i < length(parts) - 1; i++)
+				if (parts[i] == 'via') return parts[i + 1];
+		}
+		return '';
+	}
+
+	function any_via_from_route(out) {
+		for (let line in split(out, '\n')) {
+			let parts = split(trim(line), /\s+/);
+			for (let i = 0; i < length(parts) - 1; i++)
+				if (parts[i] == 'via') return parts[i + 1];
+		}
+		return '';
+	}
+
+	function get_gateway4(iface, dev, errors) {
+		if (is_uplink6(iface)) iface = cfg.uplink_interface4;
 		let gw = network_get_gateway(iface);
 		if (!gw || gw == '0.0.0.0') {
-			let out = sh.exec(pkg.ip_full + ' -4 a list dev ' + sh.quote(dev) + ' 2>/dev/null');
-			let m = match(out, /inet\s+([0-9.]+)/);
-			gw = m ? m[1] : '';
+			// use table all in case of netifd where default routes are not present in main table
+			let out = sh.exec(pkg.ip_full + ' -4 route show dev ' + sh.quote(dev) + ' table all 2>/dev/null');
+			gw = default_via_from_route(out);
+			// Fall back in case interfaces do not have a default route
+			if (!gw) gw = any_via_from_route(out);
+			// Fall back to ip route get
+			if (!gw) {
+				let out2 = sh.exec(pkg.ip_full + ' -4 route get 1.1.1.1 oif ' + sh.quote(dev) + ' 2>/dev/null');
+				gw = any_via_from_route(out2);
+			}
+			// Raise error if no gw and not point-to-point
+			if (!gw && errors && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev) + ' 2>/dev/null'), 'POINTOPOINT') < 0)
+				push(errors, { code: 'errorInterfaceRoutingUnknownGateway', info: dev });
 		}
 		return gw;
 	}
 
-	function get_gateway6(iface, dev) {
+	function get_gateway6(iface, dev, errors) {
 		if (is_uplink4(iface)) iface = cfg.uplink_interface6;
 		let gw = network_get_gateway6(iface);
 		if (!gw || gw == '::/0' || gw == '::0/0' || gw == '::') {
-			let out = sh.exec(pkg.ip_full + ' -6 a list dev ' + sh.quote(dev) + ' 2>/dev/null');
-			let m = match(out, /inet6\s+(\S+)\s+scope global/);
-			gw = m ? m[1] : '';
+			// use table all in case of netifd where default routes are not present in main table
+			let out = sh.exec(pkg.ip_full + ' -6 route show dev ' + sh.quote(dev) + ' table all 2>/dev/null');
+			gw = default_via_from_route(out);
+			// Fall back in case interfaces do not have a default route
+			if (!gw) gw = any_via_from_route(out);
+			// Fall back to a link-local neighbor advertised as router
+			if (!gw) {
+				let neigh_out = sh.exec(pkg.ip_full + ' -6 neigh show dev ' + sh.quote(dev) + ' 2>/dev/null');
+				for (let line in split(neigh_out, '\n')) {
+					if (match(line, /^fe80:.*router/)) {
+						let parts = split(trim(line), /\s+/);
+						if (length(parts) > 0) { gw = parts[0]; break; }
+					}
+				}
+			}
+			// Raise error if no gw and not point-to-point
+			if (!gw && errors && index(sh.exec(pkg.ip_full + ' address show dev ' + sh.quote(dev) + ' 2>/dev/null'), 'POINTOPOINT') < 0)
+				push(errors, { code: 'errorInterfaceRoutingUnknownGateway', info: dev });
 		}
 		return gw;
 	}

@@ -98,6 +98,7 @@ function get_text(code, cfg, ...args) {
 		errorDefaultFw4ChainMissing:           sprintf("Default fw4 chain '%s' is missing", a1),
 		errorRequiredBinaryMissing:            sprintf("Required binary '%s' is missing", a1),
 		errorInterfaceRoutingUnknownDevType:   sprintf("Unknown IPv6 Link type for device '%s'", a1),
+		errorInterfaceRoutingUnknownGateway:   sprintf("Unknown Gateway for device '%s'", a1),
 		errorUplinkDown:                       "Uplink/WAN interface is still down, increase value of 'procd_boot_trigger_delay' option",
 		errorMktempFileCreate:                 sprintf("Failed to create temporary file with mktemp mask: '%s'", a1),
 		errorSummary:                          sprintf("Errors encountered, please check %s", a1),
