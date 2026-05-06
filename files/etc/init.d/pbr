@@ -330,7 +330,8 @@ is_netifd_interface_default() {
 is_disabled_interface() { [ "$(uci_get 'network' "$1" 'disabled')" = '1' ]; }
 is_host() { echo "$1" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,61}[a-zA-Z0-9]$|^[a-zA-Z0-9]$'; }
 is_hostname() { echo "$1" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'; }
-is_domain() { ! is_ipv4 "$1" && ! is_mac_address_bad_notation "$1" && { is_host "$1" || is_hostname "$1"; }; }
+is_punycode() { echo "$1" | grep -qE '^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$' && echo "$1" | grep -qE '(^|\.)xn--'; }
+is_domain() { ! is_ipv4 "$1" && ! is_mac_address_bad_notation "$1" && { is_host "$1" || is_hostname "$1" || is_punycode "$1"; }; }
 is_dslite() { local p; network_get_protocol p "$1"; [ "${p:0:6}" = "dslite" ]; }
 is_family_mismatch() { ( is_ipv4 "${1//!}" && is_ipv6 "${2//!}" ) || ( is_ipv6 "${1//!}" && is_ipv4 "${2//!}" ); }
 is_greater() { test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"; }
