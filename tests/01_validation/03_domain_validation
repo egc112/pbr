@@ -1,0 +1,66 @@
+Testing is_domain() validation, including punycode-encoded TLDs.
+
+-- Testcase --
+import create_validators from 'validators';
+let V = create_validators();
+
+let tests = [
+	// ── Plain ASCII ──
+	['example.com',                            true,  'standard ASCII'],
+	['sub.example.com',                        true,  'subdomain'],
+	['a.b.c.d.example.com',                    true,  'deep subdomain'],
+	['localhost',                              true,  'single-label hostname'],
+	['x',                                      true,  'single character'],
+	['my-server',                              true,  'hyphen in middle'],
+	['my_server',                              true,  'underscore in middle (lenient)'],
+
+	// ── Punycode-encoded labels with ASCII TLD (worked before fix) ──
+	['xn--bcher-kva.de',                       true,  'punycode label, ASCII TLD'],
+
+	// ── Punycode-encoded TLDs (THE FIX) ──
+	['xn--p1ai',                               true,  'bare .рф TLD'],
+	['xn--90ais',                              true,  'bare .бел TLD'],
+	['example.xn--p1ai',                       true,  'ASCII label + punycode TLD'],
+	['xn--e1adjldbbpv.xn--90ais',              true,  'punycode label + punycode TLD'],
+	['xn--80aaa1cvac.xn--p1ai',                true,  'punycode label + .рф'],
+
+	// ── Unicode form (deferred, must remain rejected) ──
+	['пример.бел',                             false, 'Unicode label rejected (deferred)'],
+	['bücher.de',                              false, 'Unicode label rejected (deferred)'],
+
+	// ── IPs and MACs must still be rejected ──
+	['192.168.1.1',                            false, 'IPv4 rejected'],
+	['192.168.1.0/24',                         false, 'IPv4 CIDR rejected'],
+	['AA-BB-CC-DD-EE-FF',                      false, 'MAC (dash form) rejected'],
+
+	// ── Malformed must still be rejected ──
+	['',                                       false, 'empty string'],
+	[null,                                     false, 'null'],
+	['-leading-hyphen.com',                    false, 'leading hyphen in label'],
+	['trailing-hyphen-.com',                   false, 'trailing hyphen in label'],
+	['example.-tld',                           false, 'leading hyphen in TLD'],
+	['example.tld-',                           false, 'trailing hyphen in TLD'],
+	['example..com',                           false, 'consecutive dots'],
+	['.example.com',                           false, 'leading dot'],
+	['example.com.',                           false, 'trailing dot'],
+];
+
+let pass = 0, fail = 0;
+for (let t in tests) {
+	let input = t[0];
+	let expected = t[1];
+	let desc = t[2];
+	let actual = V.is_domain(input);
+	if (actual === expected) {
+		pass++;
+	} else {
+		fail++;
+		printf("FAIL: is_domain(%J) — expected %J, got %J  [%s]\n", input, expected, actual, desc);
+	}
+}
+printf("domain_validation: %d/%d passed\n", pass, pass + fail);
+-- End --
+
+-- Expect stdout --
+domain_validation: 27/27 passed
+-- End --

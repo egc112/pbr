@@ -33,7 +33,7 @@ function is_domain(s) {
 	if (is_ipv4(s)) return false;
 	if (match(s, /^([0-9A-Fa-f]{2}-){5}([0-9A-Fa-f]{2})$/)) return false;
 	return !!match(s, /^[a-zA-Z0-9]$/) || !!match(s, /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,61}[a-zA-Z0-9]$/) ||
-		!!match(s, /^([a-zA-Z0-9]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/);
+		!!match(s, /^([a-zA-Z0-9]([a-zA-Z0-9_-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/);
 }
 
 function is_phys_dev(s) {
