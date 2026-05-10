@@ -976,7 +976,28 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 		iface_priority = _iface_priority;
 	}
-	
+
+	// ── Enumerate mwan4 Strategies ──────────────────────────────────────
+	// Register each detected mwan4 strategy as a synthetic iface_registry
+	// entry so that policies targeting `mwan4_strategy_<name>` can resolve
+	// in policy_routing(). Strategies don't own a routing table, mark, or
+	// priority — mwan4's own chain handles the actual route decision —
+	// so this entry is metadata only. The `action: 'mwan4_strategy'` flag
+	// makes status/gateway summaries skip these entries.
+	function strategy_enumerate() {
+		for (let sname in keys(env.mwan4_strategy_chain)) {
+			set_interface('mwan4_strategy_' + sname, {
+				action: 'mwan4_strategy',
+				strategy_name: sname,
+				chain_name: env.mwan4_strategy_chain[sname],
+				mark: '', priority: '',
+				device_ipv4: '', device_ipv6: '',
+				gateway_ipv4: '', gateway_ipv6: '',
+				is_default: false,
+			});
+		}
+	}
+
 	// ── Resolve TID ─────────────────────────────────────────────────────
 	
 	function interface_resolve_tid(iface) {
@@ -1653,6 +1674,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let start_time, end_time;
 		start_time = time();
 		interface_enumerate();
+		strategy_enumerate();
 		end_time = time();
 		output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Enumerating interfaces took ' + (end_time - start_time) + 's');
 	
