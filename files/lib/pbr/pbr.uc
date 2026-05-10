@@ -1807,6 +1807,13 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			break;
 		}
 	
+		let _interface_label = function(name, iface) {
+			if (iface?.action == 'mwan4_strategy')
+				return 'mwan4:strategy:' + (iface.strategy_name || name);
+			if (env.mwan4_mark[name])  return 'mwan4:' + name;
+			if (env.netifd_mark[name]) return 'netifd:' + name;
+			return name;
+		};
 		let _build_gateway_summary = function() {
 			let lines = [];
 			for (let name in keys(iface_registry)) {
@@ -1815,7 +1822,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				let disp_dev = (name != iface.device_ipv4) ? iface.device_ipv4 : '';
 				let gw4 = iface.gateway_ipv4 || '0.0.0.0';
 				let gw6 = iface.gateway_ipv6 || '::/0';
-				let text = name + '/' + (disp_dev ? disp_dev + '/' : '') + gw4;
+				let text = _interface_label(name, iface) + '/' + (disp_dev ? disp_dev + '/' : '') + gw4;
 				if (cfg.ipv6_enabled) text += '/' + gw6;
 				if (iface.status_symbol) text += ' ' + iface.status_symbol;
 				push(lines, text);
@@ -1829,6 +1836,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			if (iface.action == 'mwan4_strategy') continue;
 			push(gateways, {
 				name: name,
+				label: _interface_label(name, iface),
 				device_ipv4: iface.device_ipv4,
 				gateway_ipv4: iface.gateway_ipv4,
 				device_ipv6: iface.device_ipv6,
@@ -1848,6 +1856,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			errors: state.errors,
 			warnings: state.warnings,
 			interfaces: env.webui_interfaces,
+			interface_labels: env.webui_interface_labels,
 			platform: {
 				nft_installed: env.nft_installed,
 				adguardhome_installed: env.adguardhome_installed,
@@ -2234,6 +2243,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			errors: svc_data?.errors || [],
 			warnings: svc_data?.warnings || [],
 			interfaces: env.webui_interfaces,
+			interface_labels: env.webui_interface_labels,
 			protocols: sort(keys(env.protocols)),
 			platform: {
 				nft_installed: env.nft_installed,
@@ -2264,7 +2274,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		name = name || pkg.name;
 		load('rpcd');
 		let result = {};
-		result[name] = { interfaces: env.webui_interfaces };
+		result[name] = {
+			interfaces: env.webui_interfaces,
+			interface_labels: env.webui_interface_labels,
+		};
 		return result;
 	}
 	

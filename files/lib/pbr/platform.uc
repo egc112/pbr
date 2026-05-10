@@ -25,6 +25,7 @@ function create_platform(fs_mod, config, sh, pkg, V) {
 		firewall_wan_zone: '',
 		ifaces_supported: '',
 		webui_interfaces: [],
+		webui_interface_labels: {},
 		uplink_gw: '',
 		uplink_gw4: '',
 		uplink_gw6: '',
@@ -89,7 +90,10 @@ function create_platform(fs_mod, config, sh, pkg, V) {
 			let m = match(line, define_re);
 			if (m) env.netifd_mark[m[1]] = m[2];
 		}
-		// mwan4 marks, chains, strategies
+		// mwan4 marks, chains, strategies — relies on the mwan4 ucode
+		// module being loadable. Fallbacks to file parsing have been
+		// dropped: current mwan4 doesn't emit the per-iface define-style
+		// lines pbr would need, and the file naming has changed too.
 		if (is_mwan4_installed()) {
 			let m4 = null;
 			try { m4 = require('mwan4'); m4.load(); } catch(e) {}
@@ -101,15 +105,6 @@ function create_platform(fs_mod, config, sh, pkg, V) {
 				}
 				for (let strategy in m4.get_strategies())
 					env.mwan4_strategy_chain[strategy] = m4.get_strategy_chain(strategy);
-			} else {
-				let mwan4_nft = readfile(pkg.mwan4_nft_iface_file) || '';
-				for (let line in split(mwan4_nft, '\n')) {
-					let m = match(line, define_re);
-					if (m) {
-						env.mwan4_mark[m[1]] = m[2];
-						env.mwan4_interface_chain[m[1]] = pkg.mwan4_nft_prefix + '_iface_in_' + m[1];
-					}
-				}
 			}
 		}
 		// Cache supported protocols from /etc/protocols

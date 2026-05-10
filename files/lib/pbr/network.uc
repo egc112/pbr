@@ -248,20 +248,28 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 
 			let parts = [];
 			let webui_parts = [];
+			let webui_labels = {};
 			config.uci_ctx('network', true).foreach('network', 'interface', function(s) {
 				let iface = s['.name'];
 				if (is_supported_interface(iface)) {
 					push(parts, iface);
 					push(webui_parts, iface);
+					if (env.mwan4_mark[iface])         webui_labels[iface] = 'mwan4:' + iface;
+					else if (env.netifd_mark[iface])   webui_labels[iface] = 'netifd:' + iface;
+					else                                webui_labels[iface] = iface;
 				}
 			});
 			// Add mwan4 strategies
 			for (let strategy in keys(env.mwan4_strategy_chain)) {
-				push(webui_parts, 'mwan4_strategy_' + strategy);
+				let value = 'mwan4_strategy_' + strategy;
+				push(webui_parts, value);
+				webui_labels[value] = 'mwan4:strategy:' + strategy;
 			}
 			push(webui_parts, 'ignore');
+			webui_labels['ignore'] = 'ignore';
 			env.ifaces_supported = join(' ', parts);
 			env.webui_interfaces = webui_parts;
+			env.webui_interface_labels = webui_labels;
 		}
 
 		// Discover gateways

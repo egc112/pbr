@@ -58,15 +58,13 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 	}
 
 	function get_external_mark_chains() {
+		// Only the netifd nft file uses pbr_mark_<...> chain naming.
+		// mwan4 emits mwan4_iface_in_* / mwan4_strategy_* chains and
+		// would never match this regex, so it isn't read here.
 		let external = {};
 		let chain_re = regexp('chain\\s+(' + pkg.nft_prefix + '_mark_\\S+)');
 		let netifd_nft = readfile(pkg.nft_netifd_file) || '';
 		for (let line in split(netifd_nft, '\n')) {
-			let m = match(line, chain_re);
-			if (m) external[m[1]] = true;
-		}
-		let mwan4_nft = readfile(pkg.mwan4_nft_iface_file) || '';
-		for (let line in split(mwan4_nft, '\n')) {
 			let m = match(line, chain_re);
 			if (m) external[m[1]] = true;
 		}
