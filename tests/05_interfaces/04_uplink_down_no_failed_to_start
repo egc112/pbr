@@ -1,0 +1,85 @@
+Regression: when the uplink is down at start time (no default route in
+ubus status), pbr.start_service emits warningUplinkDown and returns
+null on purpose — procd's boot trigger retries later. service_started
+must NOT emit "FAILED TO START" or "Check the output of nft -c -f" in
+that path, because nothing actually failed; we're deferring to boot mode.
+
+-- File ubus/network.interface.wan~status.json --
+{
+	"up": false,
+	"pending": false,
+	"available": true,
+	"autostart": true,
+	"dynamic": false,
+	"uptime": 0,
+	"l3_device": "eth1",
+	"device": "eth1",
+	"proto": "dhcp",
+	"ipv4-address": [],
+	"route": [],
+	"dns-server": []
+}
+-- End --
+
+-- File ubus/network.interface.wan6~status.json --
+{
+	"up": false,
+	"pending": false,
+	"available": true,
+	"autostart": true,
+	"dynamic": false,
+	"uptime": 0,
+	"l3_device": "eth1",
+	"device": "eth1",
+	"proto": "dhcpv6",
+	"ipv6-address": [],
+	"route": []
+}
+-- End --
+
+-- Testcase --
+import create_pbr from 'pbr';
+let pbr = create_pbr();
+
+// Capture every system() call so we can scan for the FAILED-TO-START
+// logger invocation. mocklib already stubs system to return 0; we wrap
+// it to also record the command string.
+let system_calls = [];
+let _prev_system = global.system;
+global.system = function(argv, timeout) {
+	push(system_calls, argv);
+	return _prev_system(argv, timeout);
+};
+
+let result = pbr.start_service(['on_start']);
+pbr.service_started('on_start');
+
+let failed_to_start = filter(system_calls,
+	c => type(c) == 'string' && index(c, 'FAILED TO START') >= 0);
+let check_output = filter(system_calls,
+	c => type(c) == 'string' && index(c, 'Check the output of nft -c -f') >= 0);
+let uplink_warn = filter(system_calls,
+	c => type(c) == 'string' && index(c, 'Uplink/WAN interface is still down') >= 0);
+
+let checks = [
+	['start_service_returns_null',  result == null],
+	['warning_emitted',             length(uplink_warn) >= 1],
+	['no_failed_to_start',          length(failed_to_start) == 0],
+	['no_check_nft_hint',           length(check_output) == 0],
+];
+
+let pass = 0, fail = 0;
+for (let c in checks) {
+	if (c[1]) {
+		pass++;
+	} else {
+		fail++;
+		printf("FAIL: %s\n", c[0]);
+	}
+}
+printf("uplink_down_no_failed_to_start: %d/%d passed\n", pass, pass + fail);
+-- End --
+
+-- Expect stdout --
+uplink_down_no_failed_to_start: 4/4 passed
+-- End --

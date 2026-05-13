@@ -54,12 +54,14 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	let pbr_nft_prev_param6 = '';
 	let _config_loaded = false;
 	let _loaded = false;
+	let _deferred_to_boot = false;
 
 	// ── Interface Registry Helpers ──────────────────────────────────────
 	
 	function reset() {
 		state.errors = [];
 		state.warnings = [];
+		_deferred_to_boot = false;
 		for (let k in keys(iface_registry))
 			delete iface_registry[k];
 	}
@@ -1658,7 +1660,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let reloaded_iface = (args && args[1]) || null;
 	
 		if (param == 'on_boot') return null;
-	
+
 		reset();
 		if (!load(param)) {
 			return null;
@@ -1668,6 +1670,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		if (!net.is_wan_up(param, state.errors)) {
 			output.failn();
 			output.warning(get_text('warningUplinkDown', cfg));
+			_deferred_to_boot = true;
 			return null;
 		}
 	
@@ -1908,6 +1911,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	function service_started(param) {
 		if (param == 'on_boot') return;
+		// Uplink was down at start time; we've already emitted the warning
+		// and are waiting for the procd boot trigger to retry. This is a
+		// designed deferral, not a startup failure.
+		if (_deferred_to_boot) return;
 
 		load_platform();
 
