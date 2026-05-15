@@ -645,7 +645,7 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 			case 'sets': {
 				let nft_sets_str = get_nft_sets();
 				if (nft_sets_str) {
-					let sets_list = split(nft_sets_str, '\n');
+					let sets_list = split(nft_sets_str, ' ');
 					for (let s in sets_list) {
 						s = trim(s);
 						if (s)
