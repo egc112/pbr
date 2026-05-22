@@ -60,7 +60,7 @@ fi
 
 # ── Part 3: Version tracking ─────────────────────────────────────────
 
-[ -n "$packageCompat" ] && uci_set 'pbr' 'config' 'config_compat'  "$packageCompat"
+[ -n "$initCompat" ] && uci_set 'pbr' 'config' 'config_compat'  "$initCompat"
 uci_set 'pbr' 'config' 'config_version' "$($_ucode version)"
 uci_commit 'pbr'
 
