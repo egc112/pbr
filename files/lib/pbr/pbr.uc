@@ -563,9 +563,12 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			let dns_list = config.uci_ctx('network').get('network', dest_dns_interface, 'dns');
 			if (type(dns_list) == 'array') {
 				for (let d in dns_list) {
-					if (!V.is_family_mismatch(src_addr, d)) {
-						if (V.is_ipv4(d) && !dest_dns_ipv4) dest_dns_ipv4 = d;
-						else if (V.is_ipv6(d) && !dest_dns_ipv6) dest_dns_ipv6 = d;
+					for (let s in split(src_addr || '', /\s+/)) {
+						if (!s) continue;
+						if (!V.is_family_mismatch(s, d)) {
+							if (V.is_ipv4(d) && !dest_dns_ipv4) dest_dns_ipv4 = d;
+							else if (V.is_ipv6(d) && !dest_dns_ipv6) dest_dns_ipv6 = d;
+						}
 					}
 				}
 			}

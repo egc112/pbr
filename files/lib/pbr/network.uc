@@ -209,6 +209,7 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 	}
 
 	function get_gateway6(iface, dev, errors) {
+		if (!cfg.ipv6_enabled) return null;
 		if (is_uplink4(iface)) iface = cfg.uplink_interface6;
 		let gw = network_get_gateway6(iface);
 		if (!gw || gw == '::/0' || gw == '::0/0' || gw == '::') {
