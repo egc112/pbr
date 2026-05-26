@@ -2833,15 +2833,22 @@ start_service() {
 
 	load_environment "${param:-on_start}" "$(load_validate_config)" || return 1
 	output "Processing environment (${param:-on_start}) "
+
+	# Build ifacesTriggers BEFORE is_wan_up — enumerate_interface only
+	# consults UCI/static state and is safe with WAN down. Doing it here
+	# means service_triggers() can register the full interface trigger
+	# set even on a degraded start (pbrBootFlag=1), so interface events
+	# during a WAN flap continue to fire pbr instead of having all
+	# triggers replaced by a single boot-retry trigger.
+	process_interface 'all' 'reset_globals'
+	config_foreach process_interface 'interface' 'enumerate_interface'
+
 	if ! is_wan_up "$param"; then
 		output_failn
 		output_warning "$(get_text 'warningUplinkDown')"
 		pbrBootFlag=1
 		return 0
 	fi
-
-	process_interface 'all' 'reset_globals'
-	config_foreach process_interface 'interface' 'enumerate_interface'
 
 	case "$param" in
 		on_boot)
@@ -3026,40 +3033,49 @@ service_stopped() { procd_set_config_changed firewall; }
 
 service_triggers() {
 	local n
-	if [ -n "$pbrBootFlag" ]; then
-		output "Setting trigger (on_boot) "
-		if procd_add_raw_trigger "interface.*.up" "$procd_boot_trigger_delay" "/etc/init.d/${packageName}" start; then
-			output_okn
-		else
-			output_failn
+	# Always register the full validators + interface/config triggers.
+	# procd's _procd_close_service unconditionally emits a `triggers`
+	# field, and procd_update() replaces s->trigger with whatever we
+	# emit — so emitting fewer triggers in any branch silently wipes
+	# the rest. Registering the full set in every start_service path
+	# preserves trigger registration across WAN-down transitions.
+	PROCD_RELOAD_DELAY=$(( procd_reload_delay * 1000 ))
+	procd_open_validate
+		load_validate_config
+		load_validate_policy
+		load_validate_include
+	procd_close_validate
+	procd_open_trigger
+		procd_add_config_trigger "config.change" 'openvpn' "/etc/init.d/${packageName}" reload 'on_openvpn_change'
+		procd_add_config_trigger "config.change" "${packageName}" "/etc/init.d/${packageName}" reload
+		procd_add_config_trigger "config.change" "network" "/etc/init.d/${packageName}" reload
+		if [ -n "$ifacesTriggers" ]; then
+			output 1 "Setting interface triggers "
+			for n in $ifacesTriggers; do
+				output 2 "Setting interface trigger for $n "
+				if procd_add_interface_trigger "interface.*" "$n" "/etc/init.d/${packageName}" on_interface_reload "$n"; then
+					output_ok
+				else
+					output_fail
+				fi
+			done
+			output_1_newline
 		fi
-	else
-		PROCD_RELOAD_DELAY=$(( procd_reload_delay * 1000 ))
-		procd_open_validate
-			load_validate_config
-			load_validate_policy
-			load_validate_include
-		procd_close_validate
-		procd_open_trigger
-			procd_add_config_trigger "config.change" 'openvpn' "/etc/init.d/${packageName}" reload 'on_openvpn_change'
-			procd_add_config_trigger "config.change" "${packageName}" "/etc/init.d/${packageName}" reload
-			procd_add_config_trigger "config.change" "network" "/etc/init.d/${packageName}" reload
-			if [ -n "$ifacesTriggers" ]; then
-				output 1 "Setting interface triggers "
-				for n in $ifacesTriggers; do
-					output 2 "Setting interface trigger for $n "
-					if procd_add_interface_trigger "interface.*" "$n" "/etc/init.d/${packageName}" on_interface_reload "$n"; then
-						output_ok
-					else
-						output_fail
-					fi
-				done
-				output_1_newline
+		# Safety net: when WAN is down at start time, also schedule a
+		# raw boot-retry on iface.*.up. The interface triggers above
+		# will normally drive recovery; the raw trigger only matters if
+		# no interfaces were enumerable yet.
+		if [ -n "$pbrBootFlag" ]; then
+			output "Setting trigger (on_boot) "
+			if procd_add_raw_trigger "interface.*.up" "$procd_boot_trigger_delay" "/etc/init.d/${packageName}" start; then
+				output_okn
+			else
+				output_failn
 			fi
-		procd_close_trigger
-		if [ "$serviceStartTrigger" = 'on_start' ] && [ -n "$ifacesTriggers" ]; then
-			output 3 "$serviceName monitoring interfaces: ${ifacesTriggers}\n"
 		fi
+	procd_close_trigger
+	if [ "$serviceStartTrigger" = 'on_start' ] && [ -n "$ifacesTriggers" ]; then
+		output 3 "$serviceName monitoring interfaces: ${ifacesTriggers}\n"
 	fi
 }
 
