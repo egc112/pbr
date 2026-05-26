@@ -559,17 +559,16 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			if (!dest_dns_ipv6 && V.is_ipv6(v)) dest_dns_ipv6 = v;
 		}
 	
+		// Record first v4 and first v6 DNS server from the interface; the
+		// family decision is made later by the filter_options loop, which
+		// knows the per-group family by construction. Avoids per-src_addr
+		// is_family_mismatch (which expected one address per call).
 		if (net.is_supported_interface(dest_dns_interface)) {
 			let dns_list = config.uci_ctx('network').get('network', dest_dns_interface, 'dns');
 			if (type(dns_list) == 'array') {
 				for (let d in dns_list) {
-					for (let s in split(src_addr || '', /\s+/)) {
-						if (!s) continue;
-						if (!V.is_family_mismatch(s, d)) {
-							if (V.is_ipv4(d) && !dest_dns_ipv4) dest_dns_ipv4 = d;
-							else if (V.is_ipv6(d) && !dest_dns_ipv6) dest_dns_ipv6 = d;
-						}
-					}
+					if (V.is_ipv4(d) && !dest_dns_ipv4) dest_dns_ipv4 = d;
+					else if (V.is_ipv6(d) && !dest_dns_ipv6) dest_dns_ipv6 = d;
 				}
 			}
 		}
@@ -1668,21 +1667,37 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		if (!load(param)) {
 			return null;
 		}
-		output.info.write('Detecting uplink (' + param + ') ');
-		output.verbose.write('Detecting uplink (' + param + ') ');
-		if (!net.is_wan_up(param, state.errors)) {
-			output.failn();
-			output.warning(get_text('warningUplinkDown', cfg));
-			_deferred_to_boot = true;
-			return null;
-		}
-	
+		// Enumerate interfaces BEFORE is_wan_up — interface_enumerate /
+		// strategy_enumerate consult UCI/env and don't require WAN to be
+		// up. Building ifaces_triggers here means we can still register
+		// per-interface procd triggers even on a degraded start (uplink
+		// not ready). Otherwise procd's set/add call would emit only the
+		// boot-retry trigger, which procd treats as a full replacement
+		// — silently wiping the interface triggers and breaking
+		// WAN-flap recovery (see issue #113).
 		let start_time, end_time;
 		start_time = time();
 		interface_enumerate();
 		strategy_enumerate();
 		end_time = time();
 		output.logger_debug(cfg.debug_performance, '[PERF-DEBUG] Enumerating interfaces took ' + (end_time - start_time) + 's');
+
+		output.info.write('Detecting uplink (' + param + ') ');
+		output.verbose.write('Detecting uplink (' + param + ') ');
+		if (!net.is_wan_up(param, state.errors)) {
+			output.failn();
+			output.warning(get_text('warningUplinkDown', cfg));
+			_deferred_to_boot = true;
+			// Return a partial result so the wrapper can still emit
+			// _pbr_ifaces_triggers and skip the per-instance data block,
+			// preserving procd's existing data instead of wiping it.
+			return {
+				ifacesTriggers: ifaces_triggers,
+				deferredToBoot: true,
+				errors: state.errors,
+				warnings: state.warnings,
+			};
+		}
 	
 		switch (param) {
 		case 'on_interface_reload':
@@ -1965,8 +1980,21 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	//                          that populate procd's service_data block
 	function emit_procd_shell(data) {
 		if (!data) return '';
+		// Always emit the iface list and the deferred-to-boot flag.
+		// service_triggers() in the init script reads both so per-iface
+		// procd triggers can be registered on every start, including the
+		// degraded path where ucode bailed because the uplink wasn't ready.
+		let preamble = '_pbr_ifaces_triggers=' + sh.quote(data.ifacesTriggers || '') + '\n' +
+		               '_pbr_deferred_to_boot=' + sh.quote(data.deferredToBoot ? '1' : '') + '\n';
+
+		// Degraded start: skip the per-instance data block entirely
+		// (empty _pbr_svc_data — wrapper will unset its service_data hook,
+		// so procd's existing data isn't replaced by an empty object).
+		if (data.deferredToBoot)
+			return preamble + '_pbr_svc_data=\n';
+
 		let lines = [];
-	
+
 		push(lines, 'json_add_int packageCompat ' + sh.quote('' + (data.packageCompat || 0)));
 		push(lines, 'json_add_string version ' + sh.quote(data.version || ''));
 	
@@ -2025,8 +2053,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		push(lines, 'json_close_array');
 
 		let body = join('\n', lines);
-		return '_pbr_ifaces_triggers=' + sh.quote(data.ifacesTriggers || '') + '\n' +
-		       '_pbr_svc_data='        + sh.quote(body) + '\n';
+		return preamble + '_pbr_svc_data=' + sh.quote(body) + '\n';
 	}
 
 	// ── Status Service ──────────────────────────────────────────────────

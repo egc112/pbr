@@ -65,17 +65,28 @@ start_service() {
 	# shellcheck disable=SC2181
 	[ $? -eq 0 ] || return 1
 	if [ -z "$_pbr_svc_defs" ]; then
-		# ucode returned no procd data (e.g. uplink not ready);
-		# set boot flag so service_triggers registers interface.*.up retry
+		# ucode bailed out entirely (e.g. config load failure);
+		# treat as boot-mode: schedule interface.*.up retry.
 		[ ! -s "/var/run/${packageName}.lock" ] && touch "/var/run/${packageName}.boot"
 		return 0
 	fi
-	# ucode emits two top-level variable assignments:
+	# ucode emits these top-level variable assignments:
 	#   _pbr_ifaces_triggers — space-separated iface list, consumed by service_triggers()
-	#   _pbr_svc_data        — json_add_* command block, eval'd by service_data()
-	# Both must be set here (before procd invokes service_triggers) so the
-	# trigger registration sees the iface list.
+	#   _pbr_svc_data        — json_add_* command block, eval'd by service_data() (empty on degraded start)
+	#   _pbr_deferred_to_boot — '1' when ucode bailed due to uplink-not-ready
+	# All must be set BEFORE procd invokes service_triggers / service_data
+	# so the trigger registration and data block see them.
 	eval "$_pbr_svc_defs"
+	if [ -n "$_pbr_deferred_to_boot" ]; then
+		[ ! -s "/var/run/${packageName}.lock" ] && touch "/var/run/${packageName}.boot"
+	fi
+	# Degraded start: drop the service_data hook so procd's _procd_close_service
+	# skips the per-instance data block entirely. Without this, an empty
+	# data block would be emitted and procd would replace the existing
+	# per-instance data with {}, wiping the gateway / status info.
+	if [ -z "$_pbr_svc_data" ]; then
+		unset -f service_data
+	fi
 }
 service_data() { eval "$_pbr_svc_data"; }
 stop_service() { $_ucode stop_service; }
@@ -96,35 +107,41 @@ service_started() {
 	$_ucode service_started "$1"
 }
 service_triggers() {
-	local procd_boot_trigger_delay procd_reload_delay n
+	local procd_boot_trigger_delay procd_reload_delay n boot_mode=
 	config_load "$packageName"
 	config_get procd_boot_trigger_delay 'config' 'procd_boot_trigger_delay' '5000'
 	config_get procd_reload_delay       'config' 'procd_reload_delay'       '0'
 
-	if [ -f "/var/run/${packageName}.boot" ]; then
-		rm -f "/var/run/${packageName}.boot"
-		printf 'Setting trigger (on_boot) '
-		if procd_add_raw_trigger "interface.*.up" "${procd_boot_trigger_delay}" "/etc/init.d/${packageName}" start; then
-			printf '\033[0;32m\xe2\x9c\x93\033[0m\n'
-		else
-			printf '\033[0;31m\xe2\x9c\x97\033[0m\n'
+	[ -f "/var/run/${packageName}.boot" ] && { boot_mode=1; rm -f "/var/run/${packageName}.boot"; }
+
+	# Always register the validators + config/interface triggers. procd
+	# replaces s->trigger on every service set/add that includes a
+	# triggers field, so emitting fewer triggers in any branch silently
+	# wipes the rest. Registering the full set in every start path keeps
+	# interface triggers alive across WAN-down transitions; the boot
+	# retry below is only an additional safety net.
+	PROCD_RELOAD_DELAY=$(( ${procd_reload_delay:-0} * 1000 ))
+	procd_open_validate
+		load_validate_config
+		load_validate_policy
+		load_validate_include
+	procd_close_validate
+	procd_open_trigger
+		procd_add_config_trigger "config.change" 'openvpn' "/etc/init.d/${packageName}" reload 'on_openvpn_change'
+		procd_add_config_trigger "config.change" "${packageName}" "/etc/init.d/${packageName}" reload
+		procd_add_config_trigger "config.change" "network" "/etc/init.d/${packageName}" reload
+		for n in $_pbr_ifaces_triggers; do
+			procd_add_interface_trigger "interface.*" "$n" "/etc/init.d/${packageName}" on_interface_reload "$n"
+		done
+		if [ -n "$boot_mode" ]; then
+			printf 'Setting trigger (on_boot) '
+			if procd_add_raw_trigger "interface.*.up" "${procd_boot_trigger_delay}" "/etc/init.d/${packageName}" start; then
+				printf '\033[0;32m\xe2\x9c\x93\033[0m\n'
+			else
+				printf '\033[0;31m\xe2\x9c\x97\033[0m\n'
+			fi
 		fi
-	else
-		PROCD_RELOAD_DELAY=$(( ${procd_reload_delay:-0} * 1000 ))
-		procd_open_validate
-			load_validate_config
-			load_validate_policy
-			load_validate_include
-		procd_close_validate
-		procd_open_trigger
-			procd_add_config_trigger "config.change" 'openvpn' "/etc/init.d/${packageName}" reload 'on_openvpn_change'
-			procd_add_config_trigger "config.change" "${packageName}" "/etc/init.d/${packageName}" reload
-			procd_add_config_trigger "config.change" "network" "/etc/init.d/${packageName}" reload
-			for n in $_pbr_ifaces_triggers; do
-				procd_add_interface_trigger "interface.*" "$n" "/etc/init.d/${packageName}" on_interface_reload "$n"
-			done
-		procd_close_trigger
-	fi
+	procd_close_trigger
 }
 netifd()  { $_ucode netifd "$@"; }
 on_interface_reload() {

@@ -1,8 +1,11 @@
 Regression: when the uplink is down at start time (no default route in
-ubus status), pbr.start_service emits warningUplinkDown and returns
-null on purpose — procd's boot trigger retries later. service_started
-must NOT emit "FAILED TO START" or "Check the output of nft -c -f" in
-that path, because nothing actually failed; we're deferring to boot mode.
+ubus status), pbr.start_service emits warningUplinkDown and returns a
+PARTIAL result with { deferredToBoot: true, ifacesTriggers: ... } on
+purpose — the wrapper still emits _pbr_ifaces_triggers so the per-iface
+procd triggers are registered, and procd's boot retry kicks in on the
+next interface.*.up event (see issue #113). service_started must NOT
+emit "FAILED TO START" or "Check the output of nft -c -f" in that
+path, because nothing actually failed; we're deferring to boot mode.
 
 -- File ubus/network.interface.wan~status.json --
 {
@@ -62,10 +65,12 @@ let uplink_warn = filter(system_calls,
 	c => type(c) == 'string' && index(c, 'Uplink/WAN interface is still down') >= 0);
 
 let checks = [
-	['start_service_returns_null',  result == null],
-	['warning_emitted',             length(uplink_warn) >= 1],
-	['no_failed_to_start',          length(failed_to_start) == 0],
-	['no_check_nft_hint',           length(check_output) == 0],
+	['start_service_returns_partial', type(result) == 'object'],
+	['deferred_to_boot_set',          result?.deferredToBoot == true],
+	['ifaces_triggers_populated',     type(result?.ifacesTriggers) == 'string'],
+	['warning_emitted',               length(uplink_warn) >= 1],
+	['no_failed_to_start',            length(failed_to_start) == 0],
+	['no_check_nft_hint',             length(check_output) == 0],
 ];
 
 let pass = 0, fail = 0;
@@ -81,5 +86,5 @@ printf("uplink_down_no_failed_to_start: %d/%d passed\n", pass, pass + fail);
 -- End --
 
 -- Expect stdout --
-uplink_down_no_failed_to_start: 4/4 passed
+uplink_down_no_failed_to_start: 6/6 passed
 -- End --
