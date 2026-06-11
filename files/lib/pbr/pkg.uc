@@ -30,7 +30,7 @@ const pkg = {
 	tor_config_file: '/etc/tor/torrc',
 	xray_iface_prefix: 'xray_',
 	url: function(fragment) {
-		return sprintf("https://docs.openwrt.melmac.ca/%s/%s/%s", this.name, split(this.version, '-')[0], fragment || '');
+		return sprintf("https://docs.mossdef.org/%s/%s/%s", this.name, split(this.version, '-')[0], fragment || '');
 	},
 };
 pkg.service_name = pkg.name + ' ' + pkg.version;
