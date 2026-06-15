@@ -121,6 +121,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	};
 	forwarding.disable = function() {
 		load_config();
+		if (!cfg.enabled) return;
 		if (!cfg.strict_enforcement) return;
 		if (forwarding._read() == '0') return;
 		sh.run('/sbin/sysctl -w net.ipv4.ip_forward=0');
