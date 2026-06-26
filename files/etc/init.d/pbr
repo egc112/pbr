@@ -146,6 +146,12 @@ service_triggers() {
 netifd()  { $_ucode netifd "$@"; }
 on_interface_reload() {
 	[ -e "/var/run/${packageName}.lock" ] || return 1
+	# Skip DHCPv6-renew reloads of the IPv6 uplink when the gateway is
+	# unchanged. Checked before rc_procd/stop_forward so an unchanged renew
+	# causes no forwarding churn or interface reprocessing.
+	if $_ucode should_skip_reload "$1"; then
+		return 0
+	fi
 	rc_procd start_service 'on_interface_reload' "$1"
 	service_started 'on_interface_reload'
 }

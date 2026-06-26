@@ -1098,12 +1098,17 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let _tid = interface_resolve_tid(iface);
 		let gw4 = net.get_gateway4(iface, dev4, state.errors);
 		let gw6 = net.get_gateway6(iface, dev6, state.errors);
+		// Fall back to the interface's own address for display when there is
+		// no gateway (e.g. point-to-point links). Computed before split-uplink
+		// clearing so the display reflects the interface's real addresses.
+		let ipa4 = net.get_ipaddr4(iface, dev4);
+		let ipa6 = net.get_ipaddr6(iface, dev6);
+		let dg4 = gw4 || ipa4 || '-';
+		let dg6 = gw6 || ipa6 || '-';
 		if (net.is_split_uplink()) {
 			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
 		}
-		let dg4 = gw4 || '0.0.0.0';
-		let dg6 = gw6 || '::/0';
 		let disp_dev = (iface != dev4) ? dev4 : '';
 		let disp_status = '';
 		if (net.is_default_dev(dev4))
@@ -1117,7 +1122,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				tid: _tid, mark: _mark, priority: _priority,
 				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
-				gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
+				gateway_ipv4: dg4, gateway_ipv6: dg6,
 				is_default: disp_status ? true : false,
 				status_symbol: disp_status, action: 'create',
 			});
@@ -1184,6 +1189,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let _tid = interface_resolve_tid(iface);
 		let gw4 = net.get_gateway4(iface, dev4, state.errors);
 		let gw6 = net.get_gateway6(iface, dev6, state.errors);
+		let ipa4 = net.get_ipaddr4(iface, dev4);
+		let ipa6 = net.get_ipaddr6(iface, dev6);
+		let dg4 = gw4 || ipa4 || '-';
+		let dg6 = gw6 || ipa6 || '-';
 		if (net.is_split_uplink()) {
 			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -1198,7 +1207,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			tid: _tid, mark: _mark, priority: _priority,
 			chain_name: existing.chain_name,
 			device_ipv4: dev4 || '', device_ipv6: dev6 || '',
-			gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
+			gateway_ipv4: dg4, gateway_ipv6: dg6,
 			is_default: disp_status ? true : false,
 			status_symbol: disp_status, action: 'reload',
 		});
@@ -1215,6 +1224,10 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let _tid = interface_resolve_tid(iface);
 		let gw4 = net.get_gateway4(iface, dev4, state.errors);
 		let gw6 = net.get_gateway6(iface, dev6, state.errors);
+		let ipa4 = net.get_ipaddr4(iface, dev4);
+		let ipa6 = net.get_ipaddr6(iface, dev6);
+		let dg4 = gw4 || ipa4 || '-';
+		let dg6 = gw6 || ipa6 || '-';
 		if (net.is_split_uplink()) {
 			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -1226,14 +1239,14 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		if (net.is_netifd_interface_default(iface))
 			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
 		if (iface == reloaded_iface) {
-			let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + (gw4 || '0.0.0.0') + (cfg.ipv6_enabled ? '/' + (gw6 || '::/0') : '');
+			let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
 			output.verbose.write("Reloading routing for '" + ri_text + "' ");
 			if (interface_routing.reload(_tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 				set_interface(iface, {
 					tid: _tid, mark: _mark, priority: _priority,
 					chain_name: existing.chain_name,
 					device_ipv4: dev4 || '', device_ipv6: dev6 || '',
-					gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
+					gateway_ipv4: dg4, gateway_ipv6: dg6,
 					is_default: disp_status ? true : false,
 					status_symbol: disp_status, action: 'reload_interface',
 				});
@@ -1248,7 +1261,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				tid: _tid, mark: _mark, priority: _priority,
 				chain_name: existing.chain_name,
 				device_ipv4: dev4 || '', device_ipv6: dev6 || '',
-				gateway_ipv4: gw4 || '', gateway_ipv6: gw6 || '',
+				gateway_ipv4: dg4, gateway_ipv6: dg6,
 				is_default: disp_status ? true : false,
 				status_symbol: disp_status, action: 'skip_interface',
 			});
@@ -1655,6 +1668,37 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 	
 	// ── start_service ───────────────────────────────────────────────────
 	
+	// Bypass an on_interface_reload caused by a DHCPv6 renew when the IPv6
+	// uplink gateway has not actually changed. Compares the freshly discovered
+	// gateway for the reloaded interface against the value pbr last published in
+	// its procd service data. Called from the init script BEFORE stop_forward,
+	// so an unchanged renew causes no forwarding churn or interface reprocessing.
+	function should_skip_reload(iface) {
+		if (!iface) return false;
+		reset();
+		load_config();
+		if (!net.is_uplink6(iface)) return false;
+		let dev6 = net.network_get_device(iface) || net.network_get_physdev(iface) || '';
+		config.network_flush_cache();
+		let cur = net.get_gateway6(iface, dev6) || '';
+		if (cur == '') return false;
+		let svc = config.ubus_call('service', 'list', { name: pkg.name });
+		let gateways = svc?.[pkg.name]?.data?.gateways;
+		let prev = null;
+		if (type(gateways) == 'array') {
+			for (let g in gateways)
+				if (g.name == iface) { prev = g.gateway_ipv6; break; }
+		}
+		if (cur == prev) {
+			// Match the shell: refresh the resolver hash before returning. The
+			// value is process-local, so this is effectively a no-op here, kept
+			// for parity with the reference implementation.
+			nft.resolver.store_hash();
+			return true;
+		}
+		return false;
+	}
+
 	function start_service(args) {
 		let readfile = _fs.readfile;
 		let stat = _fs.stat;
@@ -2332,6 +2376,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		load_platform,
 		load_network,
 		start_service,
+		should_skip_reload,
 		stop_service,
 		status_service,
 		netifd:                   netifd_handler,

@@ -48,6 +48,30 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		return null;
 	}
 
+	function network_get_ipaddr(iface) {
+		let iface_status = config.ubus_call('network.interface.' + iface, 'status');
+		let addrs = iface_status?.['ipv4-address'];
+		if (type(addrs) == 'array' && length(addrs) > 0)
+			return addrs[0]?.address || null;
+		return null;
+	}
+
+	function network_get_ipaddr6(iface) {
+		let iface_status = config.ubus_call('network.interface.' + iface, 'status');
+		let addrs = iface_status?.['ipv6-address'];
+		if (type(addrs) == 'array' && length(addrs) > 0)
+			return addrs[0]?.address || null;
+		// fall back to a delegated prefix's local address (PD-only setups)
+		let pfx = iface_status?.['ipv6-prefix-assignment'];
+		if (type(pfx) == 'array') {
+			for (let p in pfx) {
+				let la = p?.['local-address'];
+				if (la?.address) return la.address;
+			}
+		}
+		return null;
+	}
+
 	function network_get_protocol(iface) {
 		let ctx = config.uci_ctx('network');
 		return ctx.get('network', iface, 'proto') || null;
@@ -235,6 +259,47 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		return gw;
 	}
 
+	// Return the first address from `ip -o addr show` output (field 4,
+	// stripped of its prefix length), mirroring `awk '{print $4; exit}' | cut -d/ -f1`.
+	function first_addr_field(out) {
+		for (let line in split(out, '\n')) {
+			line = trim(line);
+			if (line == '') continue;
+			let parts = split(line, /\s+/);
+			if (length(parts) >= 4) {
+				let a = parts[3];
+				let slash = index(a, '/');
+				return slash >= 0 ? substr(a, 0, slash) : a;
+			}
+			return '';
+		}
+		return '';
+	}
+
+	// Return an interface's own IPv4 address, used for display when the
+	// interface has no gateway (e.g. point-to-point links). Falls back to
+	// the device's address from `ip` when ubus status has none.
+	function get_ipaddr4(iface, dev) {
+		if (is_uplink6(iface)) iface = cfg.uplink_interface4;
+		let ipa = network_get_ipaddr(iface);
+		if (!ipa || ipa == '0.0.0.0') {
+			if (dev)
+				ipa = first_addr_field(sh.exec(pkg.ip_full + ' -4 -o addr show dev ' + sh.quote(dev) + ' 2>/dev/null'));
+		}
+		return ipa;
+	}
+
+	function get_ipaddr6(iface, dev) {
+		if (!cfg.ipv6_enabled) return null;
+		if (is_uplink4(iface)) iface = cfg.uplink_interface6;
+		let ipa = network_get_ipaddr6(iface);
+		if (!ipa || ipa == '::/0' || ipa == '::0/0' || ipa == '::') {
+			if (dev)
+				ipa = first_addr_field(sh.exec(pkg.ip_full + ' -6 -o addr show dev ' + sh.quote(dev) + ' scope global 2>/dev/null'));
+		}
+		return ipa;
+	}
+
 	// ── load() ──────────────────────────────────────────────
 
 	function load(param) {
@@ -306,6 +371,8 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		network_get_physdev,
 		network_get_gateway,
 		network_get_gateway6,
+		network_get_ipaddr,
+		network_get_ipaddr6,
 		network_get_protocol,
 		uci_get_device,
 		is_dslite, is_l2tp, is_oc, is_ovpn, is_pptp,
@@ -320,6 +387,7 @@ function create_network(fs_mod, config, sh, pkg, platform, V) {
 		is_supported_protocol, is_mwan4_strategy,
 		is_supported_interface, is_config_enabled,
 		get_gateway4, get_gateway6,
+		get_ipaddr4, get_ipaddr6,
 		load, is_wan_up,
 	};
 }

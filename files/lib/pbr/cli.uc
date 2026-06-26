@@ -44,6 +44,10 @@ case 'service_started':
 	pbr.service_started(ARGV[0]);
 	break;
 
+case 'should_skip_reload':
+	exit(pbr.should_skip_reload(ARGV[0]) ? 0 : 1);
+	break;
+
 case 'stop_forward':
 	pbr.forwarding.disable();
 	break;

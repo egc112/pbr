@@ -418,16 +418,62 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 		return _nftset_result(v4_ok, v6_ok);
 	};
 
+	// True when one of a dnsmasq line's nftset specs already references `setname`.
+	// Each spec is `family#inet#table#setname`; the set name is the part after
+	// the last '#'. The spec list is the run between the domain and ' # comment'.
+	let _dnsmasq_line_has_set = function(line, prefix, setname) {
+		let rest = substr(line, length(prefix));
+		let cpos = index(rest, ' #');
+		let specs = cpos >= 0 ? substr(rest, 0, cpos) : rest;
+		for (let spec in split(specs, ',')) {
+			let parts = split(trim(spec), '#');
+			if (parts[length(parts) - 1] == setname) return true;
+		}
+		return false;
+	};
+
 	nftset.add_dnsmasq_element = function(iface, target, type_val, uid, comment, param) {
 		let ns = _nftset_names(iface, target, type_val, uid);
 		if (!ns) return false;
 		let nft_table = pkg.nft_table;
-		let n6 = cfg.ipv6_enabled ? ns.n6 : '';
-		let entry = 'nftset=/' + param + '/4#inet#' + nft_table + '#' + ns.n4 +
-			(n6 ? ',6#inet#' + nft_table + '#' + n6 : '') +
-			' # ' + comment;
+		let set4 = ns.n4;
+		let set6 = (cfg.ipv6_enabled && ns.n6) ? ns.n6 : '';
+		let new_spec = '4#inet#' + nft_table + '#' + set4 +
+			(set6 ? ',6#inet#' + nft_table + '#' + set6 : '');
+		let prefix = 'nftset=/' + param + '/';
+
+		// dnsmasq only honours the first nftset line it sees per domain, so a
+		// second policy targeting the same domain via a different set is lost.
+		// Merge new set specs onto the existing line for the domain instead of
+		// appending a second (ignored) line.
 		let existing = readfile(pkg.dnsmasq_file) || '';
-		if (index(existing, entry) >= 0) return true;
+		let lines = [];
+		let idx = -1;
+		for (let l in split(existing, '\n')) {
+			if (l == '') continue;
+			if (idx < 0 && substr(l, 0, length(prefix)) == prefix) idx = length(lines);
+			push(lines, l);
+		}
+
+		if (idx >= 0) {
+			let line = lines[idx];
+			// Our v4 set is already present for this domain: nothing to add.
+			if (_dnsmasq_line_has_set(line, prefix, set4)) return true;
+			// Domain present via a different set: append our spec(s). If the v6
+			// set is already on the line, only add the v4 half to avoid a dupe.
+			let append_spec = new_spec;
+			if (set6 && _dnsmasq_line_has_set(line, prefix, set6))
+				append_spec = '4#inet#' + nft_table + '#' + set4;
+			let cpos = index(line, ' #');
+			let head = cpos >= 0 ? substr(line, 0, cpos) : line;
+			let tail = cpos >= 0 ? substr(line, cpos) : '';
+			lines[idx] = head + ',' + append_spec + tail + ', ' + comment;
+			writefile(pkg.dnsmasq_file, join('\n', lines) + '\n');
+			return _nftset_result(true, false);
+		}
+
+		// New domain: append a fresh line.
+		let entry = prefix + new_spec + ' # ' + comment;
 		let fh = _open(pkg.dnsmasq_file, 'a');
 		if (fh) {
 			fh.write(entry + '\n');
