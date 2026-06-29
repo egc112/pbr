@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install ucode build dependencies
         run: |
@@ -68,6 +68,7 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     env:
       REPO_APK_KEY: ${{ secrets.REPO_APK_KEY }}
+      PKG_NAME: ${{ github.event.repository.name }}
 
     strategy:
       fail-fast: false
@@ -106,10 +107,7 @@ jobs:
 
     steps:
       - name: 🧾 Checkout repo
-        uses: actions/checkout@v4
-
-      - name: 📛 Set PKG_NAME from repo
-        run: echo "PKG_NAME=${{ github.event.repository.name }}" >> "$GITHUB_ENV"
+        uses: actions/checkout@v5
 
       - name: 🧰 Set up melmac feed structure
         run: |
@@ -202,7 +200,7 @@ jobs:
 
     steps:
       - name: 🧾 Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: 🔍 Extract version and release from Makefile
         id: version
