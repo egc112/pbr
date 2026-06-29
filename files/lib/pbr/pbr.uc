@@ -1087,6 +1087,16 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		return 0;
 	};
 
+	// Build the "GW4[/GW6]" display suffix. IPv4 always renders (falling back
+	// to 0.0.0.0); the IPv6 segment is omitted entirely when the interface has
+	// no v6 gateway or address, so v6-less interfaces don't render a bare "/-".
+	function disp_gw_suffix(dg4, dg6) {
+		let s = dg4 || '0.0.0.0';
+		if (cfg.ipv6_enabled && dg6 && dg6 != '')
+			s += '/' + dg6;
+		return s;
+	}
+
 	interface_process.create = function(iface) {
 		let existing = get_interface(iface);
 		if (!existing) return 0;
@@ -1103,8 +1113,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		// clearing so the display reflects the interface's real addresses.
 		let ipa4 = net.get_ipaddr4(iface, dev4);
 		let ipa6 = net.get_ipaddr6(iface, dev6);
-		let dg4 = gw4 || ipa4 || '-';
-		let dg6 = gw6 || ipa6 || '-';
+		let dg4 = gw4 || ipa4 || '';
+		let dg6 = gw6 || ipa6 || '';
 		if (net.is_split_uplink()) {
 			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -1115,7 +1125,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			disp_status = (cfg.verbosity == '1') ? sym.ok[0] : sym.ok[1];
 		if (net.is_netifd_interface_default(iface))
 			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
-		let display_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
+		let display_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + disp_gw_suffix(dg4, dg6);
 		output.verbose.write("Setting up routing for '" + display_text + "' ");
 		if (interface_routing.create(_tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 			set_interface(iface, {
@@ -1191,8 +1201,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let gw6 = net.get_gateway6(iface, dev6, state.errors);
 		let ipa4 = net.get_ipaddr4(iface, dev4);
 		let ipa6 = net.get_ipaddr6(iface, dev6);
-		let dg4 = gw4 || ipa4 || '-';
-		let dg6 = gw6 || ipa6 || '-';
+		let dg4 = gw4 || ipa4 || '';
+		let dg6 = gw6 || ipa6 || '';
 		if (net.is_split_uplink()) {
 			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -1226,8 +1236,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let gw6 = net.get_gateway6(iface, dev6, state.errors);
 		let ipa4 = net.get_ipaddr4(iface, dev4);
 		let ipa6 = net.get_ipaddr6(iface, dev6);
-		let dg4 = gw4 || ipa4 || '-';
-		let dg6 = gw6 || ipa6 || '-';
+		let dg4 = gw4 || ipa4 || '';
+		let dg6 = gw6 || ipa6 || '';
 		if (net.is_split_uplink()) {
 			if (net.is_uplink4(iface)) { gw6 = ''; dev6 = ''; }
 			else if (net.is_uplink6(iface)) { gw4 = ''; dev4 = ''; }
@@ -1239,7 +1249,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		if (net.is_netifd_interface_default(iface))
 			disp_status = (cfg.verbosity == '1') ? sym.okb[0] : sym.okb[1];
 		if (iface == reloaded_iface) {
-			let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + dg4 + (cfg.ipv6_enabled ? '/' + dg6 : '');
+			let ri_text = iface + '/' + (disp_dev ? disp_dev + '/' : '') + disp_gw_suffix(dg4, dg6);
 			output.verbose.write("Reloading routing for '" + ri_text + "' ");
 			if (interface_routing.reload(_tid, _mark, iface, gw4, dev4, gw6, dev6, _priority) == 0) {
 				set_interface(iface, {
@@ -1886,10 +1896,8 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				let iface = iface_registry[name];
 				if (!iface || iface.action == 'mwan4_strategy') continue;
 				let disp_dev = (name != iface.device_ipv4) ? iface.device_ipv4 : '';
-				let gw4 = iface.gateway_ipv4 || '0.0.0.0';
-				let gw6 = iface.gateway_ipv6 || '::/0';
-				let text = _interface_label(name, iface) + '/' + (disp_dev ? disp_dev + '/' : '') + gw4;
-				if (cfg.ipv6_enabled) text += '/' + gw6;
+				let text = _interface_label(name, iface) + '/' + (disp_dev ? disp_dev + '/' : '') +
+					disp_gw_suffix(iface.gateway_ipv4, iface.gateway_ipv6);
 				if (iface.status_symbol) text += ' ' + iface.status_symbol;
 				push(lines, text);
 			}
