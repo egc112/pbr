@@ -2278,18 +2278,22 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			for (let line in split('' + content, '\n')) {
 				let m = match(line, /^(\s*(option|list)\s+)(endpoint_host|key|password|preshared_key|private_key|psk|public_key|token|username)(\s+)(.*)/);
 				if (m) {
-					let masked = replace(m[5], /[^ \t.\x27]/g, '*');
+					let masked = replace(m[5], /[^ \t\x27"]+/g, 'REDACTED');
 					printf('%s%s%s%s\n', m[1], m[3], m[4], masked);
 				} else {
 					let masked_line = line;
 					if (!match(line, /^\s*(option|list)\s+allowed_ips\s+/)) {
+						// MAC addresses (exactly six colon-separated octets)
+						masked_line = replace(masked_line, /\b([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\b/g, '__:RE:DA:CT:ED:__');
+						// IPv6 addresses (full and :: compressed forms)
+						masked_line = replace(masked_line, /(([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,7}:|([0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}|([0-9A-Fa-f]{1,4}:){1,5}(:[0-9A-Fa-f]{1,4}){1,2}|([0-9A-Fa-f]{1,4}:){1,4}(:[0-9A-Fa-f]{1,4}){1,3}|([0-9A-Fa-f]{1,4}:){1,3}(:[0-9A-Fa-f]{1,4}){1,4}|([0-9A-Fa-f]{1,4}:){1,2}(:[0-9A-Fa-f]{1,4}){1,5}|[0-9A-Fa-f]{1,4}:(:[0-9A-Fa-f]{1,4}){1,6}|:((:[0-9A-Fa-f]{1,4}){1,7}|:))/g, 'RE:DA::CT:ED');
+						// Public IPv4 addresses (private ranges left intact)
 						masked_line = replace(masked_line, /([0-9]{1,3}\.){3}[0-9]{1,3}/g, function(ip) {
 							if (match(ip, /^(10\.|127\.|192\.168\.)/) ||
 							    match(ip, /^172\.(1[6-9]|2[0-9]|3[01])\./))
 								return ip;
-							return replace(ip, /[0-9]/g, '*');
+							return 'RE.DA.CT.ED';
 						});
-						masked_line = replace(masked_line, /([a-fA-F0-9]{2,}:){1,7}[a-fA-F0-9]{2,}/g, '***');
 					}
 					printf('%s\n', masked_line);
 				}
