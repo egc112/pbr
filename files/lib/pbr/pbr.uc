@@ -1701,6 +1701,7 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			// value is process-local, so this is effectively a no-op here, kept
 			// for parity with the reference implementation.
 			nft.resolver.store_hash();
+			output.verbose.write("Skipping reload for '" + iface + "' - IPv6 gateway unchanged (" + cur + ")\\n");
 			return true;
 		}
 		return false;
