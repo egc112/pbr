@@ -632,6 +632,15 @@ function create_nft(fs_mod, config, sh, output, pkg, platform, network, V, state
 				let max_ifaces = mask_val / mark_val;
 				let prio_max = int(cfg.uplink_ip_rules_priority) + 1;
 				let prio_min = int(cfg.uplink_ip_rules_priority) - max_ifaces;
+				// Never let the window reach priority 0: that is the kernel's own
+				// 'from all lookup local' rule, and deleting it kills all local
+				// delivery -- the router stops answering on its own addresses and
+				// needs a physical reset. prio_min goes <= 0 whenever
+				// uplink_ip_rules_priority is smaller than (fw_mask / uplink_mark),
+				// e.g. a priority of 99 with the default masks (255), or even the
+				// default 30000 if fw_mask is widened to ffff0000. Clamping here
+				// guards both loops below, as each tests 'prio < prio_min'.
+				if (prio_min < 1) prio_min = 1;
 
 				let rules4 = sh.exec(pkg.ip_full + ' -4 rule show 2>/dev/null');
 				if (rules4) {

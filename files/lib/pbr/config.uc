@@ -145,6 +145,10 @@ function create_config(uci_mod, ubus_mod, pkg) {
 		if (!match('' + cfg.procd_boot_trigger_delay, /^[0-9]+$/)) cfg.procd_boot_trigger_delay = '5000';
 		if (int(cfg.procd_boot_trigger_delay) < 1000) cfg.procd_boot_trigger_delay = '1000';
 
+		if (!match('' + cfg.uplink_ip_rules_priority, /^[0-9]+$/)) cfg.uplink_ip_rules_priority = '30000';
+		if (int(cfg.uplink_ip_rules_priority) < 99) cfg.uplink_ip_rules_priority = '99';
+		if (int(cfg.uplink_ip_rules_priority) > 32765) cfg.uplink_ip_rules_priority = '32765';
+
 		// Build nft_set_flags string
 		let nft_set_flags = '';
 		let fi = cfg.nft_set_flags_interval;
