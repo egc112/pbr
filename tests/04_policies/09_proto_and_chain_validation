@@ -1,4 +1,4 @@
-Testing the two ways a policy's 'proto' option goes wrong.
+Testing the ways a policy's 'proto' and 'chain' options go wrong.
 
 'proto' is a PORT QUALIFIER: it only ever reaches a rule as a prefix on
 sport/dport (files/lib/pbr/pbr.uc), and pbr's own defaulting says as much --
@@ -86,6 +86,22 @@ one of these two cases.
 			"interface": "wan",
 			"dest_addr": "192.0.2.15",
 			"proto": "ICMP"
+		},
+		{
+			".name": "policy_bad_chain",
+			"name": "Bad Chain",
+			"enabled": "1",
+			"interface": "wan",
+			"dest_addr": "192.0.2.16",
+			"chain": "input"
+		},
+		{
+			".name": "policy_good_chain",
+			"name": "Good Chain",
+			"enabled": "1",
+			"interface": "wan",
+			"dest_addr": "192.0.2.17",
+			"chain": "forward"
 		}
 	]
 }
@@ -148,6 +164,18 @@ let checks = [
 	['mixed_case_normalised',   length(filter(result.warnings || [], w =>
 		'' + w.info == "'Mixed Case Proto' (udp)")) == 1],
 
+	// 6. a chain pbr does not create cannot hold a rule: nft answers "No such
+	//    file or directory" and rejects the whole file. 'input' and
+	//    'postrouting' were documented for years and have never existed here,
+	//    and a plain typo does the same thing -- so reject the policy instead.
+	['bad_chain_rejected',  coded(result.errors, 'errorPolicyUnknownChain', 'Bad Chain')],
+	['bad_chain_no_rule',   length(rules_for('Bad Chain')) == 0],
+	['no_pbr_input_chain',  index(nft, 'pbr_input') < 0],
+	// a chain that does exist is untouched
+	['good_chain_kept',     length(filter(rules_for('Good Chain'),
+		l => index(l, 'pbr_forward') >= 0)) > 0],
+	['good_chain_no_error', !coded(result.errors, 'errorPolicyUnknownChain', 'Good Chain')],
+
 	// 6. rejecting one policy must not take the others with it
 	['others_survive',     length(rules_for('Udp No Port')) > 0 &&
 	                       length(rules_for('Udp With Port')) > 0],
@@ -162,9 +190,9 @@ for (let c in checks) {
 		printf("FAIL: %s\n", c[0]);
 	}
 }
-printf("proto_without_ports: %d/%d passed\n", pass, pass + fail);
+printf("proto_and_chain_validation: %d/%d passed\n", pass, pass + fail);
 -- End --
 
 -- Expect stdout --
-proto_without_ports: 15/15 passed
+proto_and_chain_validation: 20/20 passed
 -- End --

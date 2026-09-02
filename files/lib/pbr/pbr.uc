@@ -748,6 +748,22 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 			push(state.errors, { code: 'errorPolicyNoInterface', info: name });
 			output.fail(); return 1;
 		}
+		// A chain pbr does not create cannot hold a rule: nft answers "No such
+		// file or directory" and rejects the whole file, so the service stops.
+		// The README listed 'input' and 'postrouting' for years and neither has
+		// existed since before 1.2.2 -- but a plain typo does the same thing.
+		// 'dstnat' is not in chains_list yet IS created (nft.uc), and a policy
+		// naming it works today, so accept it rather than break such a config.
+		if (chain) {
+			let known = false;
+			for (let c in split(pkg.chains_list + ' dstnat', /\s+/))
+				if (c == lc(chain)) known = true;
+			if (!known) {
+				push(state.errors, { code: 'errorPolicyUnknownChain',
+					info: "'" + name + "' (" + chain + ")" });
+				output.fail(); return 1;
+			}
+		}
 		// 'proto' is a PORT QUALIFIER, not a match of its own: it only ever
 		// reaches a rule as a prefix on sport/dport. Set without a port it is
 		// dropped and the policy routes every protocol; set to a protocol that
