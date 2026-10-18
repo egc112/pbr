@@ -325,12 +325,6 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		let nft_table = pkg.nft_table;
 		let nft_prefix = pkg.nft_prefix;
 	
-		if (!dest_dns_ipv4 && !dest_dns_ipv6) {
-			process_dns_policy_error = true;
-			push(state.errors, { code: 'errorPolicyProcessNoInterfaceDns', info: "'" + dest_dns + "'" });
-			return 1;
-		}
-	
 		// A rule built from exclusions alone has no positive source to take its
 		// family from, so fall back to the negated entries for the guards below
 		// and let the exclusions themselves decide which families to emit.
@@ -677,6 +671,11 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		// is_family_mismatch (which expected one address per call).
 		if (net.is_supported_interface(dest_dns_interface)) {
 			let dns_list = config.uci_ctx('network').get('network', dest_dns_interface, 'dns');
+			// 'option dns' is as common in the wild as 'list dns', and uci hands
+			// it back as one whitespace-separated string. Unsplit it matched
+			// neither is_ipv4 nor is_ipv6 and the servers were dropped.
+			if (type(dns_list) == 'string')
+				dns_list = filter(split(trim(dns_list), /\s+/), d => d != '');
 			if (type(dns_list) == 'array') {
 				for (let d in dns_list) {
 					if (V.is_ipv4(d) && !dest_dns_ipv4) dest_dns_ipv4 = d;
@@ -694,6 +693,20 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 		}
 		if (!dest_dns) {
 			push(state.errors, { code: 'errorPolicyNoDns', info: name });
+			output.fail(); return 1;
+		}
+		// dest_dns named something, but it resolved to no server for either
+		// family -- typically an interface whose DNS could not be determined.
+		// This has to be caught HERE. The loop below skips the ipv4 and ipv6
+		// groups for the family they lack, so a policy with a plain-address
+		// source matches only those two, emits nothing, and falls through to
+		// output.ok() -- routing nothing while reporting success.
+		// dns_policy_routing() raises the same error, but only the three
+		// family-agnostic groups (phys_dev, mac_address, domain) ever reach it,
+		// so the fault was reported for a MAC source and silent for an address.
+		if (!dest_dns_ipv4 && !dest_dns_ipv6) {
+			// bare value: the message template quotes its argument already
+			push(state.errors, { code: 'errorPolicyProcessNoInterfaceDns', info: dest_dns });
 			output.fail(); return 1;
 		}
 	
