@@ -579,15 +579,16 @@ function create_pbr(fs_mod, uci_mod, ubus_mod) {
 				}
 				chain = 'dstnat';
 				let p4_base = nft_insert + ' rule inet ' + nft_table + ' ' + nft_prefix + '_' + chain +
-					rule_params + ' meta nfproto ipv4 ' + param4;
+					' meta nfproto ipv4 ' + param4;
 				let p6_base = nft_insert + ' rule inet ' + nft_table + ' ' + nft_prefix + '_' + chain +
-					rule_params + ' meta nfproto ipv6 ' + param6;
+					' meta nfproto ipv6 ' + param6;
+				// Counters run in order; count only after every match, including dport.
 				let tor_rules = [
-					'udp dport 53 redirect to :' + env.tor_dns_port + ' comment "Tor-DNS-UDP"',
-					'tcp dport 80 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTP-TCP"',
-					'udp dport 80 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTP-UDP"',
-					'tcp dport 443 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-TCP"',
-					'udp dport 443 redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-UDP"',
+					'udp dport 53' + rule_params + ' redirect to :' + env.tor_dns_port + ' comment "Tor-DNS-UDP"',
+					'tcp dport 80' + rule_params + ' redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTP-TCP"',
+					'udp dport 80' + rule_params + ' redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTP-UDP"',
+					'tcp dport 443' + rule_params + ' redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-TCP"',
+					'udp dport 443' + rule_params + ' redirect to :' + env.tor_traffic_port + ' comment "Tor-HTTPS-UDP"',
 				];
 				for (let dest_rule in tor_rules) {
 					if (!src_inline_set_ipv4_empty && !dest_inline_set_ipv4_empty) {
