@@ -1,8 +1,10 @@
 # Compile every .uc file with the OLDEST ucode pbr must support. MANUAL ONLY.
 #
-# Newer ucode accepts everything older accepts, so a build that works on master
-# says nothing about the routers people run. This gate is deliberately pointed
-# at the old interpreter.
+# A build that works on master says nothing about the routers people run, so
+# this gate is deliberately pointed at the old interpreter. The opposite
+# direction (code that only OLD ucode accepts, such as adjacent template
+# literals since ucode fe9e2947) is caught by the lint step in
+# openwrt-release.yml, which compiles against ucode master on every push.
 #
 # UCODE_REF is the ucode shipped by OpenWrt 25.12 (package version
 # 2026.01.16~85922056). Bump it only when the oldest SUPPORTED OpenWrt release

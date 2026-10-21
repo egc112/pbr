@@ -2,10 +2,11 @@
 #
 # check-ucode-syntax.sh — compile every .uc file with a given ucode binary.
 #
-# Catches syntax that is too NEW for the oldest ucode pbr must support. Newer
-# ucode accepts everything older accepts, so building against master proves
-# nothing about the routers people actually run — point this at the OLDEST
-# supported interpreter.
+# Catches syntax that is too NEW for the oldest ucode pbr must support.
+# Building against master proves nothing about the routers people actually
+# run — point this at the OLDEST supported interpreter. Syntax that is too OLD
+# for master (adjacent template literals since ucode fe9e2947) is caught by the
+# lint step in .github/workflows/openwrt-release.yml instead.
 #
 # Usage: tests/check-ucode-syntax.sh [path-to-ucode]     (default: ucode in PATH)
 #
