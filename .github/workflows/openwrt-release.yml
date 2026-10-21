@@ -56,6 +56,14 @@ jobs:
           else
             fail=1
           fi
+          for script in ../../usr/share/pbr/*.uc; do
+            printf "compile-check %s ... " "${script##*/}"
+            if ucode -S -c -o /dev/null "$script" 2>&1; then
+              echo "ok"
+            else
+              fail=1
+            fi
+          done
           exit $fail
 
       - name: Run functional tests
